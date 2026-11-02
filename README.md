@@ -1,4 +1,4 @@
-# Ordenador de Archivos por Extensión
+# fsort
 
 Una herramienta CLI simple para organizar automáticamente tus archivos en carpetas según su extensión.
 
@@ -15,19 +15,19 @@ Una herramienta CLI simple para organizar automáticamente tus archivos en carpe
 
 ```bash
 # Ordenar archivos en el directorio actual
-python3 sort_files_by_ext.py
+python3 fsort.py
 
 # Ordenar archivos en un directorio específico
-python3 sort_files_by_ext.py ~/Descargas
+python3 fsort.py ~/Descargas
 
 # Simular sin aplicar cambios
-python3 sort_files_by_ext.py . --dry-run
+python3 fsort.py . --dry-run
 
 # Copiar en lugar de mover
-python3 sort_files_by_ext.py ~/Documentos --copy
+python3 fsort.py ~/Documentos --copy
 
 # Procesar recursivamente
-python3 sort_files_by_ext.py . --recursive
+python3 fsort.py . --recursive
 ```
 
 ## Opciones
@@ -45,7 +45,7 @@ python3 sort_files_by_ext.py . --recursive
 Para ejecutar como comando global:
 
 ```bash
-chmod +x sort_files_by_ext.py
-sudo ln -s $(pwd)/sort_files_by_ext.py /usr/local/bin/organizar
-# Ahora puedes usar: organizar ~/Descargas
+chmod +x fsort.py
+sudo ln -s $(pwd)/fsort.py /usr/local/bin/fsort
+# Ahora puedes usar: fsort ~/Descargas
 ```

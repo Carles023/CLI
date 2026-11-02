@@ -26,7 +26,7 @@ def sort_files(directory: Path, dry_run: bool = False, copy: bool = False, recur
     
     # Excluir el propio script si está en el directorio
     script_name = Path(__file__).name
-    files = [f for f in files if f.name != script_name and f.name != "sort_files_by_ext.py"]
+    files = [f for f in files if f.name != script_name and f.name != "fsort.py"]
     
     if not files:
         print("No hay archivos para ordenar.")
