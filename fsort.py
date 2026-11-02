@@ -158,6 +158,66 @@ def flatten_dir(directory: Path, dest: Path, dry_run: bool = False, copy: bool =
     print(f"\nCompletado: {moved_count} archivo(s) {'copiados' if copy else 'movidos'}.")
 
 
+def move_items(items: list, dest: Path, dry_run: bool = False, copy: bool = False):
+    """
+    Mueve (o copia) una lista de archivos o carpetas a un directorio destino.
+    """
+    if not dest.exists():
+        print(f"Error: El destino {dest} no existe. Créalo primero.")
+        return
+
+    if not dest.is_dir():
+        print(f"Error: {dest} no es un directorio.")
+        return
+
+    moved_count = 0
+    for item in items:
+        path = Path(item).expanduser()
+        if not path.exists():
+            print(f"Error: {path} no existe.")
+            continue
+
+        if path.resolve() == dest:
+            print(f"Omitido: {path.name} ya está en el destino.")
+            continue
+
+        dest_file = dest / path.name
+
+        if dry_run:
+            action = "Copiaría" if copy else "Movería"
+            print(f"[DRY-RUN] {action}: {path} -> {dest_file}")
+            continue
+
+        # Manejar colisiones de nombre
+        counter = 1
+        original_dest = dest_file
+        while dest_file.exists():
+            if path.is_dir():
+                dest_file = dest / f"{original_dest.name}_{counter}"
+            else:
+                dest_file = dest / f"{original_dest.stem}_{counter}{original_dest.suffix}"
+            counter += 1
+
+        try:
+            if copy:
+                if path.is_dir():
+                    shutil.copytree(path, dest_file)
+                else:
+                    shutil.copy2(path, dest_file)
+                print(f"Copiado: {path.name} -> {dest}/")
+            else:
+                shutil.move(str(path), str(dest_file))
+                print(f"Movido: {path.name} -> {dest}/")
+            moved_count += 1
+        except Exception as e:
+            print(f"Error al procesar {path}: {e}")
+
+    if dry_run:
+        print("\n[DRY-RUN] Simulación completada. Usa sin --dry-run para aplicar los cambios.")
+    else:
+        print(f"\nCompletado: {moved_count} elemento(s) {'copiados' if copy else 'movidos'}.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Ordena archivos por extensión en carpetas separadas.",
@@ -170,6 +230,8 @@ Ejemplos:
   %(prog)s . --copy           # Copia en lugar de mover
   %(prog)s . -r               # También ordena subdirectorios
   %(prog)s ~/Descargas --flatten ~/Todos   # Vacía subcarpetas hacia ~/Todos
+  %(prog)s --move foto.jpg docs ~/Todos    # Mueve archivos/carpetas al destino
+  %(prog)s --move --copy a.txt ~/Backup    # Copia en lugar de mover
         """
     )
     parser.add_argument("directory", nargs="?", default=".", 
@@ -184,11 +246,17 @@ Ejemplos:
                         help="Vaciar subcarpetas y mover/copiar sus archivos al directorio destino")
     parser.add_argument("--keep-empty", action="store_true",
                         help="No eliminar las subcarpetas vacías al usar --flatten")
+    parser.add_argument("-m", "--move", nargs="+", metavar="ITEM",
+                        help="Mover/copiar archivos o carpetas al directorio destino (último argumento)")
     
     args = parser.parse_args()
     directory = Path(args.directory).expanduser().resolve()
 
-    if args.flatten:
+    if args.move:
+        items = args.move[:-1]
+        dest = Path(args.move[-1]).expanduser().resolve()
+        move_items(items, dest, dry_run=args.dry_run, copy=args.copy)
+    elif args.flatten:
         dest = Path(args.flatten).expanduser().resolve()
         flatten_dir(directory, dest, dry_run=args.dry_run, copy=args.copy,
                     remove_empty=not args.keep_empty)

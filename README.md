@@ -11,6 +11,7 @@ Una herramienta CLI simple para organizar automáticamente tus archivos en carpe
 - Maneja archivos sin extensión en una carpeta `sin_extension/`
 - Evita colisiones de nombres añadiendo un contador
 - Vacía subcarpetas y mueve sus archivos a otro directorio (`--flatten`)
+- Mueve o copia archivos y carpetas concretos a otro directorio (`--move`)
 
 ## Uso
 
@@ -32,6 +33,12 @@ python3 fsort.py . --recursive
 
 # Vaciar subcarpetas y juntar sus archivos en otro directorio
 python3 fsort.py ~/Descargas --flatten ~/Todos
+
+# Mover archivos o carpetas a otro directorio (el último argumento es el destino)
+python3 fsort.py --move foto.jpg ~/Documentos pdfs ~/Todos
+
+# Copiar en lugar de mover
+python3 fsort.py --move --copy a.txt ~/Backup
 ```
 
 ## Opciones
@@ -44,6 +51,7 @@ python3 fsort.py ~/Descargas --flatten ~/Todos
 | `-r, --recursive` | Procesa archivos recursivamente en subdirectorios |
 | `-f, --flatten DESTINO` | Vacía las subcarpetas y mueve/copias sus archivos al destino |
 | `--keep-empty` | Conserva las subcarpetas vacías al usar `--flatten` |
+| `-m, --move ITEM... DESTINO` | Mueve/copía archivos o carpetas al destino (último argumento) |
 | `-h, --help` | Muestra la ayuda |
 
 ## Instalación (opcional)
