@@ -85,6 +85,79 @@ def sort_files(directory: Path, dry_run: bool = False, copy: bool = False, recur
         print("\n[DRY-RUN] Simulación completada. Usa sin --dry-run para aplicar los cambios.")
 
 
+def flatten_dir(directory: Path, dest: Path, dry_run: bool = False, copy: bool = False, remove_empty: bool = True):
+    """
+    Vacía las subcarpetas de un directorio moviendo (o copiando) sus archivos
+    a un directorio destino.
+    """
+    if not directory.exists():
+        print(f"Error: El directorio {directory} no existe.")
+        return
+
+    if not directory.is_dir():
+        print(f"Error: {directory} no es un directorio.")
+        return
+
+    dest.mkdir(parents=True, exist_ok=True)
+
+    subdirs = [d for d in directory.iterdir() if d.is_dir()]
+    if not subdirs:
+        print("No hay subcarpetas que vaciar.")
+        return
+
+    moved_count = 0
+    for subdir in subdirs:
+        for file_path in subdir.rglob("*"):
+            if not file_path.is_file():
+                continue
+
+            dest_file = dest / file_path.name
+
+            if file_path.parent == dest:
+                continue
+
+            if dry_run:
+                action = "Copiaría" if copy else "Movería"
+                print(f"[DRY-RUN] {action}: {file_path} -> {dest_file}")
+                continue
+
+            # Manejar colisiones de nombre
+            counter = 1
+            original_dest = dest_file
+            while dest_file.exists():
+                stem = original_dest.stem
+                suffix = original_dest.suffix
+                dest_file = dest / f"{stem}_{counter}{suffix}"
+                counter += 1
+
+            try:
+                if copy:
+                    shutil.copy2(file_path, dest_file)
+                    print(f"Copiado: {file_path.relative_to(directory)} -> {dest_file.name}")
+                else:
+                    shutil.move(str(file_path), str(dest_file))
+                    print(f"Movido: {file_path.relative_to(directory)} -> {dest_file.name}")
+                moved_count += 1
+            except Exception as e:
+                print(f"Error al procesar {file_path}: {e}")
+
+    if dry_run:
+        print("\n[DRY-RUN] Simulación completada. Usa sin --dry-run para aplicar los cambios.")
+        return
+
+    if remove_empty and not copy:
+        for subdir in sorted(subdirs, key=lambda d: len(d.parts), reverse=True):
+            leftovers = [f for f in subdir.rglob("*") if f.is_file()]
+            if not leftovers:
+                try:
+                    shutil.rmtree(subdir)
+                    print(f"Eliminada carpeta vacía: {subdir.relative_to(directory)}/")
+                except Exception as e:
+                    print(f"Error al eliminar {subdir}: {e}")
+
+    print(f"\nCompletado: {moved_count} archivo(s) {'copiados' if copy else 'movidos'}.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Ordena archivos por extensión en carpetas separadas.",
@@ -96,6 +169,7 @@ Ejemplos:
   %(prog)s . --dry-run        # Simula sin mover archivos
   %(prog)s . --copy           # Copia en lugar de mover
   %(prog)s . -r               # También ordena subdirectorios
+  %(prog)s ~/Descargas --flatten ~/Todos   # Vacía subcarpetas hacia ~/Todos
         """
     )
     parser.add_argument("directory", nargs="?", default=".", 
@@ -106,11 +180,20 @@ Ejemplos:
                         help="Copiar archivos en lugar de moverlos")
     parser.add_argument("-r", "--recursive", action="store_true",
                         help="Procesar archivos recursivamente en subdirectorios")
+    parser.add_argument("-f", "--flatten", metavar="DESTINO",
+                        help="Vaciar subcarpetas y mover/copiar sus archivos al directorio destino")
+    parser.add_argument("--keep-empty", action="store_true",
+                        help="No eliminar las subcarpetas vacías al usar --flatten")
     
     args = parser.parse_args()
     directory = Path(args.directory).expanduser().resolve()
-    
-    sort_files(directory, dry_run=args.dry_run, copy=args.copy, recursive=args.recursive)
+
+    if args.flatten:
+        dest = Path(args.flatten).expanduser().resolve()
+        flatten_dir(directory, dest, dry_run=args.dry_run, copy=args.copy,
+                    remove_empty=not args.keep_empty)
+    else:
+        sort_files(directory, dry_run=args.dry_run, copy=args.copy, recursive=args.recursive)
 
 
 if __name__ == "__main__":
