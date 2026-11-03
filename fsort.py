@@ -1,8 +1,54 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import os
+import shlex
 import shutil
+import subprocess
+import sys
 from pathlib import Path
+
+ACTIONS_FILE = Path(__file__).parent / "actions.json"
+
+
+def load_actions(path: Path = ACTIONS_FILE) -> dict:
+    """Carga las acciones definidas fuera del código en actions.json."""
+    if not path.exists():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("actions", {})
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"Error al leer {path}: {e}")
+        return {}
+
+
+def run_action(name: str, action: dict, args: list, dry_run: bool = False):
+    """Ejecuta una acción definida en el JSON. Soporta tipo 'command'."""
+    if action.get("type", "command") != "command":
+        print(f"Error: tipo de acción desconocido '{action.get('type')}'.")
+        return
+
+    command = action.get("command")
+    if not command:
+        print(f"Error: la acción '{name}' no tiene comando.")
+        return
+
+    # Sustituir {1}, {2}, ... por los argumentos del usuario
+    for i, arg in enumerate(args, 1):
+        command = command.replace(f"{{{i}}}", arg)
+
+    if dry_run:
+        print(f"[DRY-RUN] Ejecutaría: {command}")
+        return
+
+    try:
+        result = subprocess.run(shlex.split(command) if os.name != "nt" else command,
+                                shell=os.name == "nt")
+        sys.exit(result.returncode)
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
 
 
 def sort_files(directory: Path, dry_run: bool = False, copy: bool = False, recursive: bool = False):
@@ -219,6 +265,15 @@ def move_items(items: list, dest: Path, dry_run: bool = False, copy: bool = Fals
 
 
 def main():
+    actions = load_actions()
+    unknown_args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    if unknown_args and unknown_args[0] in actions:
+        idx = sys.argv.index(unknown_args[0])
+        action_args = [a for a in sys.argv[idx + 1:] if not a.startswith("-")]
+        dry_run = "--dry-run" in sys.argv or "-d" in sys.argv
+        run_action(unknown_args[0], actions[unknown_args[0]], action_args, dry_run)
+        return
+
     parser = argparse.ArgumentParser(
         description="Ordena archivos por extensión en carpetas separadas.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -232,6 +287,9 @@ Ejemplos:
   %(prog)s ~/Descargas --flatten ~/Todos   # Vacía subcarpetas hacia ~/Todos
   %(prog)s --move foto.jpg docs ~/Todos    # Mueve archivos/carpetas al destino
   %(prog)s --move --copy a.txt ~/Backup    # Copia en lugar de mover
+
+Acciones personalizadas (definidas en actions.json):
+  %(prog)s <accion> [args...] # Ej. fsort.py limpiar ~/Descargas
         """
     )
     parser.add_argument("directory", nargs="?", default=".", 
@@ -248,8 +306,21 @@ Ejemplos:
                         help="No eliminar las subcarpetas vacías al usar --flatten")
     parser.add_argument("-m", "--move", nargs="+", metavar="ITEM",
                         help="Mover/copiar archivos o carpetas al directorio destino (último argumento)")
+    parser.add_argument("--actions", action="store_true",
+                        help="Listar las acciones personalizadas de actions.json")
     
     args = parser.parse_args()
+
+    if args.actions:
+        if not actions:
+            print("No hay acciones definidas en actions.json.")
+        else:
+            print("Acciones disponibles (actions.json):")
+            for name, action in actions.items():
+                desc = action.get("description", "")
+                print(f"  {name}: {desc}")
+        return
+
     directory = Path(args.directory).expanduser().resolve()
 
     if args.move:

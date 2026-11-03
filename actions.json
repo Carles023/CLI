@@ -1,0 +1,54 @@
+{
+  "actions": {
+    "limpiar": {
+      "description": "Mueve archivos temporales y backups a la papelera (ejemplo)",
+      "type": "command",
+      "command": "mv {1}/*.tmp {1}/*.bak trash/"
+    },
+    "info": {
+      "description": "Muestra información del directorio",
+      "type": "command",
+      "command": "ls -lh {1}"
+    },
+    "tamano": {
+      "description": "Muestra el tamaño total de un directorio",
+      "type": "command",
+      "command": "du -sh {1}"
+    },
+    "ordenar": {
+      "description": "Ordena archivos de un directorio en subcarpetas por extensión (equivale a ejecutar fsort.py sin flags)",
+      "type": "command",
+      "command": "python3 fsort.py {1}"
+    },
+    "ordenar-copiar": {
+      "description": "Igual que 'ordenar' pero copia los archivos en lugar de moverlos",
+      "type": "command",
+      "command": "python3 fsort.py {1} --copy"
+    },
+    "ordenar-recursivo": {
+      "description": "Ordena archivos por extensión incluyendo subdirectorios",
+      "type": "command",
+      "command": "python3 fsort.py {1} --recursive"
+    },
+    "vaciar": {
+      "description": "Vacía las subcarpetas de un directorio moviendo sus archivos al destino indicado ({2}) y elimina las carpetas vacías",
+      "type": "command",
+      "command": "python3 fsort.py {1} --flatten {2}"
+    },
+    "vaciar-copiar": {
+      "description": "Igual que 'vaciar' pero copia los archivos y conserva las subcarpetas",
+      "type": "command",
+      "command": "python3 fsort.py {1} --flatten {2} --copy --keep-empty"
+    },
+    "mover": {
+      "description": "Mueve archivos o carpetas ({1}...{n-1}) al directorio destino (último argumento)",
+      "type": "command",
+      "command": "python3 fsort.py --move {1}"
+    },
+    "mover-copiar": {
+      "description": "Copia archivos o carpetas al directorio destino en lugar de moverlos",
+      "type": "command",
+      "command": "python3 fsort.py --move --copy {1}"
+    }
+  }
+}
