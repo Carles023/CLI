@@ -8,6 +8,15 @@ import sys
 from pathlib import Path
 
 from config import ACTIONS_FILE, load_and_validate
+from errores import (
+    ActionCommandMissingError,
+    ActionTypeError,
+    DestinationNotFoundError,
+    DirectoryNotFoundError,
+    FsortError,
+    NotADirectoryError_,
+    OperationError,
+)
 
 
 def load_actions(path: Path = ACTIONS_FILE) -> dict:
@@ -20,13 +29,11 @@ def load_actions(path: Path = ACTIONS_FILE) -> dict:
 def run_action(name: str, action: dict, args: list, dry_run: bool = False):
     """Ejecuta una acción definida en el JSON. Soporta tipo 'command'."""
     if action.get("type", "command") != "command":
-        print(f"Error: tipo de acción desconocido '{action.get('type')}'.")
-        return
+        raise ActionTypeError(str(action.get("type")))
 
     command = action.get("command")
     if not command:
-        print(f"Error: la acción '{name}' no tiene comando.")
-        return
+        raise ActionCommandMissingError(name)
 
     # Sustituir {1}, {2}, ... por los argumentos del usuario
     for i, arg in enumerate(args, 1):
@@ -41,7 +48,7 @@ def run_action(name: str, action: dict, args: list, dry_run: bool = False):
                                 shell=os.name == "nt")
         sys.exit(result.returncode)
     except FileNotFoundError as e:
-        print(f"Error: {e}")
+        raise OperationError(str(e))
 
 
 def sort_files(directory: Path, dry_run: bool = False, copy: bool = False, recursive: bool = False):
@@ -50,12 +57,10 @@ def sort_files(directory: Path, dry_run: bool = False, copy: bool = False, recur
     Crea una carpeta por extensión y mueve/copia los archivos.
     """
     if not directory.exists():
-        print(f"Error: El directorio {directory} no existe.")
-        return
-    
+        raise DirectoryNotFoundError(str(directory))
+
     if not directory.is_dir():
-        print(f"Error: {directory} no es un directorio.")
-        return
+        raise NotADirectoryError_(str(directory))
     
     # Obtener archivos (solo archivos, no directorios)
     if recursive:
@@ -115,7 +120,7 @@ def sort_files(directory: Path, dry_run: bool = False, copy: bool = False, recur
                 print(f"Movido: {file_path.name} -> {ext_folder}/")
             moved_count += 1
         except Exception as e:
-            print(f"Error al procesar {file_path.name}: {e}")
+            raise OperationError(f"{file_path}: {e}")
     
     if not dry_run:
         action = "copiados" if copy else "movidos"
@@ -130,12 +135,10 @@ def flatten_dir(directory: Path, dest: Path, dry_run: bool = False, copy: bool =
     a un directorio destino.
     """
     if not directory.exists():
-        print(f"Error: El directorio {directory} no existe.")
-        return
+        raise DirectoryNotFoundError(str(directory))
 
     if not directory.is_dir():
-        print(f"Error: {directory} no es un directorio.")
-        return
+        raise NotADirectoryError_(str(directory))
 
     dest.mkdir(parents=True, exist_ok=True)
 
@@ -178,7 +181,7 @@ def flatten_dir(directory: Path, dest: Path, dry_run: bool = False, copy: bool =
                     print(f"Movido: {file_path.relative_to(directory)} -> {dest_file.name}")
                 moved_count += 1
             except Exception as e:
-                print(f"Error al procesar {file_path}: {e}")
+                raise OperationError(f"{file_path}: {e}")
 
     if dry_run:
         print("\n[DRY-RUN] Simulación completada. Usa sin --dry-run para aplicar los cambios.")
@@ -192,7 +195,7 @@ def flatten_dir(directory: Path, dest: Path, dry_run: bool = False, copy: bool =
                     shutil.rmtree(subdir)
                     print(f"Eliminada carpeta vacía: {subdir.relative_to(directory)}/")
                 except Exception as e:
-                    print(f"Error al eliminar {subdir}: {e}")
+                    raise OperationError(f"no se pudo eliminar {subdir}: {e}")
 
     print(f"\nCompletado: {moved_count} archivo(s) {'copiados' if copy else 'movidos'}.")
 
@@ -202,12 +205,10 @@ def move_items(items: list, dest: Path, dry_run: bool = False, copy: bool = Fals
     Mueve (o copia) una lista de archivos o carpetas a un directorio destino.
     """
     if not dest.exists():
-        print(f"Error: El destino {dest} no existe. Créalo primero.")
-        return
+        raise DestinationNotFoundError(str(dest))
 
     if not dest.is_dir():
-        print(f"Error: {dest} no es un directorio.")
-        return
+        raise NotADirectoryError_(str(dest))
 
     moved_count = 0
     for item in items:
@@ -249,7 +250,7 @@ def move_items(items: list, dest: Path, dry_run: bool = False, copy: bool = Fals
                 print(f"Movido: {path.name} -> {dest}/")
             moved_count += 1
         except Exception as e:
-            print(f"Error al procesar {path}: {e}")
+            raise OperationError(f"{path}: {e}")
 
     if dry_run:
         print("\n[DRY-RUN] Simulación completada. Usa sin --dry-run para aplicar los cambios.")
@@ -258,14 +259,18 @@ def move_items(items: list, dest: Path, dry_run: bool = False, copy: bool = Fals
 
 
 def main():
-    actions = load_actions()
-    unknown_args = [a for a in sys.argv[1:] if not a.startswith("-")]
-    if unknown_args and unknown_args[0] in actions:
-        idx = sys.argv.index(unknown_args[0])
-        action_args = [a for a in sys.argv[idx + 1:] if not a.startswith("-")]
-        dry_run = "--dry-run" in sys.argv or "-d" in sys.argv
-        run_action(unknown_args[0], actions[unknown_args[0]], action_args, dry_run)
-        return
+    try:
+        actions = load_actions()
+        unknown_args = [a for a in sys.argv[1:] if not a.startswith("-")]
+        if unknown_args and unknown_args[0] in actions:
+            idx = sys.argv.index(unknown_args[0])
+            action_args = [a for a in sys.argv[idx + 1:] if not a.startswith("-")]
+            dry_run = "--dry-run" in sys.argv or "-d" in sys.argv
+            run_action(unknown_args[0], actions[unknown_args[0]], action_args, dry_run)
+            return
+    except FsortError as e:
+        print(f"Error: {e}")
+        raise SystemExit(1)
 
     parser = argparse.ArgumentParser(
         description="Ordena archivos por extensión en carpetas separadas.",
@@ -304,6 +309,14 @@ Acciones personalizadas (definidas en actions.json):
     
     args = parser.parse_args()
 
+    try:
+        dispatch(args, actions)
+    except FsortError as e:
+        print(f"Error: {e}")
+        raise SystemExit(1)
+
+
+def dispatch(args, actions: dict):
     if args.actions:
         if not actions:
             print("No hay acciones definidas en actions.json.")

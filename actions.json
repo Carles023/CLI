@@ -49,6 +49,11 @@
       "description": "Copia archivos o carpetas al directorio destino en lugar de moverlos",
       "type": "command",
       "command": "python3 fsort.py --move --copy {1}"
+    },
+    "pdf-a-odt": {
+      "description": "Convierte un PDF ({1}) a ODT en el directorio destino ({2}) conservando el PDF original",
+      "type": "command",
+      "command": "libreoffice --headless --convert-to odt:writer8 --outdir {2} {1}"
     }
   }
 }

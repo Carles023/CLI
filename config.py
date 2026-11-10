@@ -11,6 +11,13 @@ VALID_TYPES = {"command"}
 PLACEHOLDER_RE = re.compile(r"\{(\d+)\}")
 
 
+from errores import (
+    ActionsFileInvalidError,
+    ActionsFileNotFoundError,
+    ActionsValidationError,
+)
+
+
 def validate_action(name: str, action: object) -> list:
     """Valida una acción individual y devuelve los errores encontrados."""
     errors = []
@@ -97,23 +104,18 @@ def validate(data: object) -> list:
 
 
 def load_and_validate(path: Path = ACTIONS_FILE) -> dict:
-    """Carga el JSON, lo valida y devuelve las acciones. Lanza SystemExit si es inválido."""
+    """Carga el JSON, lo valida y devuelve las acciones. Lanza una excepción si es inválido."""
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
-        print(f"Error: no se encuentra el archivo {path}.")
-        raise SystemExit(1)
+        raise ActionsFileNotFoundError(str(path))
     except json.JSONDecodeError as e:
-        print(f"Error: JSON inválido en {path} (línea {e.lineno}, columna {e.colno}): {e.msg}")
-        raise SystemExit(1)
+        raise ActionsFileInvalidError(f"{path} (línea {e.lineno}, columna {e.colno}): {e.msg}")
 
     errors = validate(data)
     if errors:
-        print(f"Error: validación fallida en {path} ({len(errors)} error(es)):")
-        for err in errors:
-            print(f"  - {err}")
-        raise SystemExit(1)
+        raise ActionsValidationError([f"{path}: {err}" for err in errors])
 
     return data.get("actions", {})
 
@@ -132,10 +134,13 @@ def main() -> int:
 
     errors = validate(data)
     if errors:
-        print(f"✗ {path}: {len(errors)} error(es) de validación:")
-        for err in errors:
-            print(f"  - {err}")
-        return 1
+        try:
+            raise ActionsValidationError(errors)
+        except ActionsValidationError as e:
+            print(f"✗ {path}: {e.detail}:")
+            for err in e.errors:
+                print(f"  - {err}")
+            return 1
 
     print(f"✓ {path}: válido ({len(data.get('actions', {}))} acción(es)).")
     return 0

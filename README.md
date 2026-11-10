@@ -34,6 +34,19 @@ Puedes añadir comandos nuevos sin tocar el código editando `actions.json`:
 - Ejecutar: `python3 fsort.py info ~/Descargas`
 - Listar las acciones disponibles: `python3 fsort.py --actions`
 - Simular: `python3 fsort.py info ~/Descargas --dry-run`
+- Validar `actions.json` y ver qué campo falla: `python3 config.py`
+
+### pdf-a-odt
+
+Convierte un PDF a ODT (formato editable de LibreOffice Writer) conservando el PDF original:
+
+```bash
+python3 fsort.py pdf-a-odt ~/Documentos/informe.pdf ~/Documentos/odts
+```
+
+- `{1}`: ruta del PDF a convertir.
+- `{2}`: directorio destino donde se genera el `.odt` (se crea si no existe).
+- Requiere LibreOffice (`soffice`) instalado en el sistema.
 
 ## Uso
 
@@ -61,6 +74,9 @@ python3 fsort.py --move foto.jpg ~/Documentos pdfs ~/Todos
 
 # Copiar en lugar de mover
 python3 fsort.py --move --copy a.txt ~/Backup
+
+# Convertir un PDF a ODT conservando el original
+python3 fsort.py pdf-a-odt ~/Documentos/informe.pdf ~/Documentos/odts
 ```
 
 ## Opciones
