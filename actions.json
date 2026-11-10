@@ -16,44 +16,44 @@
       "command": "du -sh {1}"
     },
     "ordenar": {
-      "description": "Ordena archivos de un directorio en subcarpetas por extensión (equivale a ejecutar fsort.py sin flags)",
-      "type": "command",
-      "command": "python3 fsort.py {1}"
+      "description": "Ordena archivos de un directorio en subcarpetas por extensión",
+      "type": "python",
+      "func": "sort_files",
+      "kwargs": {}
     },
     "ordenar-copiar": {
       "description": "Igual que 'ordenar' pero copia los archivos en lugar de moverlos",
-      "type": "command",
-      "command": "python3 fsort.py {1} --copy"
+      "type": "python",
+      "func": "sort_files",
+      "kwargs": {"copy": true}
     },
     "ordenar-recursivo": {
       "description": "Ordena archivos por extensión incluyendo subdirectorios",
-      "type": "command",
-      "command": "python3 fsort.py {1} --recursive"
+      "type": "python",
+      "func": "sort_files",
+      "kwargs": {"recursive": true}
     },
     "vaciar": {
       "description": "Vacía las subcarpetas de un directorio moviendo sus archivos al destino indicado ({2}) y elimina las carpetas vacías",
-      "type": "command",
-      "command": "python3 fsort.py {1} --flatten {2}"
+      "type": "python",
+      "func": "flatten_dir"
     },
     "vaciar-copiar": {
       "description": "Igual que 'vaciar' pero copia los archivos y conserva las subcarpetas",
-      "type": "command",
-      "command": "python3 fsort.py {1} --flatten {2} --copy --keep-empty"
+      "type": "python",
+      "func": "flatten_dir",
+      "kwargs": {"copy": true, "remove_empty": false}
     },
     "mover": {
       "description": "Mueve archivos o carpetas ({1}...{n-1}) al directorio destino (último argumento)",
-      "type": "command",
-      "command": "python3 fsort.py --move {1}"
+      "type": "python",
+      "func": "move_items"
     },
     "mover-copiar": {
       "description": "Copia archivos o carpetas al directorio destino en lugar de moverlos",
-      "type": "command",
-      "command": "python3 fsort.py --move --copy {1}"
-    },
-    "pdf-a-odt": {
-      "description": "Convierte un PDF ({1}) a ODT en el directorio destino ({2}) conservando el PDF original",
-      "type": "command",
-      "command": "libreoffice --headless --convert-to odt:writer8 --outdir {2} {1}"
+      "type": "python",
+      "func": "move_items",
+      "kwargs": {"copy": true}
     }
   }
 }

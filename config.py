@@ -7,7 +7,7 @@ from pathlib import Path
 
 ACTIONS_FILE = Path(__file__).parent / "actions.json"
 
-VALID_TYPES = {"command"}
+VALID_TYPES = {"command", "python"}
 PLACEHOLDER_RE = re.compile(r"\{(\d+)\}")
 
 
@@ -34,24 +34,39 @@ def validate_action(name: str, action: object) -> list:
             f"no '{type(action['description']).__name__}'"
         )
 
+    action_type = action.get("type")
+
     if "type" not in action:
         errors.append(f"acciones.{name}.type: campo requerido (falta)")
-    elif not isinstance(action["type"], str):
-        errors.append(f"acciones.{name}.type: debe ser texto, no '{type(action['type']).__name__}'")
-    elif action["type"] not in VALID_TYPES:
+    elif not isinstance(action_type, str):
+        errors.append(f"acciones.{name}.type: debe ser texto, no '{type(action_type).__name__}'")
+    elif action_type not in VALID_TYPES:
         errors.append(
-            f"acciones.{name}.type: valor inválido '{action['type']}' "
+            f"acciones.{name}.type: valor inválido '{action_type}' "
             f"(permitidos: {', '.join(sorted(VALID_TYPES))})"
         )
 
-    if "command" not in action:
-        errors.append(f"acciones.{name}.command: campo requerido (falta)")
-    elif not isinstance(action["command"], str):
-        errors.append(f"acciones.{name}.command: debe ser texto, no '{type(action['command']).__name__}'")
-    elif not action["command"].strip():
-        errors.append(f"acciones.{name}.command: no puede estar vacío")
+    if action_type == "python":
+        if "func" not in action:
+            errors.append(f"acciones.{name}.func: campo requerido cuando type es 'python' (falta)")
+        elif not isinstance(action["func"], str) or not action["func"].strip():
+            errors.append(f"acciones.{name}.func: debe ser un texto no vacío")
 
-    unknown_keys = set(action) - {"description", "type", "command"}
+        kwargs = action.get("kwargs", {})
+        if not isinstance(kwargs, dict):
+            errors.append(f"acciones.{name}.kwargs: debe ser un objeto, no '{type(kwargs).__name__}'")
+
+        unknown_keys = set(action) - {"description", "type", "func", "kwargs"}
+    else:
+        if "command" not in action:
+            errors.append(f"acciones.{name}.command: campo requerido (falta)")
+        elif not isinstance(action["command"], str):
+            errors.append(f"acciones.{name}.command: debe ser texto, no '{type(action['command']).__name__}'")
+        elif not action["command"].strip():
+            errors.append(f"acciones.{name}.command: no puede estar vacío")
+
+        unknown_keys = set(action) - {"description", "type", "command"}
+
     for key in sorted(unknown_keys):
         errors.append(f"acciones.{name}.{key}: campo no reconocido")
 
@@ -72,6 +87,22 @@ def validate_placeholders(name: str, action: dict) -> list:
             f"acciones.{name}.command: los marcadores deben ser consecutivos desde {{1}}; "
             f"faltan {', '.join('{%d}' % m for m in missing)}"
         )
+    return errors
+
+
+def validate_func_exists(name: str, action: dict) -> list:
+    """Comprueba que la función 'func' exista en fsort.py."""
+    import importlib
+    errors = []
+    func_name = action.get("func")
+    if not isinstance(func_name, str) or not func_name.strip():
+        return errors
+    try:
+        fsort = importlib.import_module("fsort")
+    except ImportError as e:
+        return [f"acciones.{name}.func: no se pudo importar fsort.py ({e})"]
+    if not callable(getattr(fsort, func_name, None)):
+        errors.append(f"acciones.{name}.func: la función '{func_name}' no existe en fsort.py")
     return errors
 
 
@@ -99,12 +130,14 @@ def validate(data: object) -> list:
         errors.extend(validate_action(name, action))
         if isinstance(action, dict):
             errors.extend(validate_placeholders(name, action))
+            if action.get("type") == "python" and not getattr(validate, "_skip_funcs", False):
+                errors.extend(validate_func_exists(name, action))
 
     return errors
 
 
 def load_and_validate(path: Path = ACTIONS_FILE) -> dict:
-    """Carga el JSON, lo valida y devuelve las acciones. Lanza una excepción si es inválido."""
+    """Carga el JSON, lo valida (incluidas las funciones) y devuelve las acciones. Lanza una excepción si es inválido."""
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)

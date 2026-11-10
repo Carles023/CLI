@@ -49,6 +49,18 @@ class ActionCommandMissingError(FsortError):
     message = "La acción no tiene comando"
 
 
+class ActionFuncMissingError(FsortError):
+    """La acción de tipo 'python' no define la función a ejecutar."""
+
+    message = "La acción no define la función a ejecutar"
+
+
+class ActionFuncNotFoundError(FsortError):
+    """La función indicada en la acción no existe en fsort.py."""
+
+    message = "La función de la acción no existe"
+
+
 class DirectoryNotFoundError(FsortError):
     """El directorio indicado no existe."""
 

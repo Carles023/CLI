@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import os
 import shlex
 import shutil
@@ -7,9 +8,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from config import ACTIONS_FILE, load_and_validate
+from config import ACTIONS_FILE, ActionsFileInvalidError, ActionsFileNotFoundError, ActionsValidationError, validate
 from errores import (
     ActionCommandMissingError,
+    ActionFuncMissingError,
+    ActionFuncNotFoundError,
     ActionTypeError,
     DestinationNotFoundError,
     DirectoryNotFoundError,
@@ -20,16 +23,38 @@ from errores import (
 
 
 def load_actions(path: Path = ACTIONS_FILE) -> dict:
-    """Carga y valida las acciones definidas fuera del código en actions.json."""
+    """Carga y valida (solo estructura) las acciones definidas en actions.json."""
     if not path.exists():
         return {}
-    return load_and_validate(path)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        raise ActionsFileNotFoundError(str(path))
+    except json.JSONDecodeError as e:
+        raise ActionsFileInvalidError(f"{path} (línea {e.lineno}, columna {e.colno}): {e.msg}")
+
+    validate._skip_funcs = True
+    try:
+        errors = validate(data)
+    finally:
+        del validate._skip_funcs
+    if errors:
+        raise ActionsValidationError([f"{path}: {err}" for err in errors])
+
+    return data.get("actions", {})
 
 
 def run_action(name: str, action: dict, args: list, dry_run: bool = False):
-    """Ejecuta una acción definida en el JSON. Soporta tipo 'command'."""
-    if action.get("type", "command") != "command":
-        raise ActionTypeError(str(action.get("type")))
+    """Ejecuta una acción definida en el JSON. Soporta tipos 'command' y 'python'."""
+    action_type = action.get("type")
+
+    if action_type == "python":
+        run_python_action(name, action, args, dry_run)
+        return
+
+    if action_type != "command":
+        raise ActionTypeError(str(action_type))
 
     command = action.get("command")
     if not command:
@@ -49,6 +74,39 @@ def run_action(name: str, action: dict, args: list, dry_run: bool = False):
         sys.exit(result.returncode)
     except FileNotFoundError as e:
         raise OperationError(str(e))
+
+
+def run_python_action(name: str, action: dict, args: list, dry_run: bool = False):
+    """Ejecuta una acción de tipo 'python' llamando a la función indicada en 'func'."""
+    func_name = action.get("func")
+    if not func_name:
+        raise ActionFuncMissingError(name)
+
+    module = sys.modules[__name__]
+    func = getattr(module, func_name, None)
+    if not callable(func):
+        raise ActionFuncNotFoundError(func_name)
+
+    kwargs = dict(action.get("kwargs") or {})
+    kwargs["dry_run"] = dry_run
+
+    if func is move_items:
+        if len(args) < 2:
+            raise ActionCommandMissingError(f"{name} (requiere al menos un elemento y un destino)")
+        items = args[:-1]
+        dest = Path(args[-1]).expanduser().resolve()
+        func(items, dest, **kwargs)
+    else:
+        if not args:
+            raise DirectoryNotFoundError("(sin directorio: indica el directorio como argumento)")
+        directory = Path(args[0]).expanduser().resolve()
+        if func is flatten_dir:
+            if len(args) < 2:
+                raise DestinationNotFoundError("(sin destino: indica el destino como segundo argumento)")
+            dest = Path(args[1]).expanduser().resolve()
+            func(directory, dest, **kwargs)
+        else:
+            func(directory, **kwargs)
 
 
 def sort_files(directory: Path, dry_run: bool = False, copy: bool = False, recursive: bool = False):
@@ -261,62 +319,43 @@ def move_items(items: list, dest: Path, dry_run: bool = False, copy: bool = Fals
 def main():
     try:
         actions = load_actions()
-        unknown_args = [a for a in sys.argv[1:] if not a.startswith("-")]
-        if unknown_args and unknown_args[0] in actions:
-            idx = sys.argv.index(unknown_args[0])
-            action_args = [a for a in sys.argv[idx + 1:] if not a.startswith("-")]
-            dry_run = "--dry-run" in sys.argv or "-d" in sys.argv
-            run_action(unknown_args[0], actions[unknown_args[0]], action_args, dry_run)
-            return
     except FsortError as e:
         print(f"Error: {e}")
         raise SystemExit(1)
 
     parser = argparse.ArgumentParser(
-        description="Ordena archivos por extensión en carpetas separadas.",
+        description="Ejecuta comandos definidos en actions.json (ordenar, vaciar, mover, info, ...).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Ejemplos:
-  %(prog)s                    # Ordena archivos en el directorio actual
-  %(prog)s ~/Descargas        # Ordena archivos en Descargas
-  %(prog)s . --dry-run        # Simula sin mover archivos
-  %(prog)s . --copy           # Copia en lugar de mover
-  %(prog)s . -r               # También ordena subdirectorios
-  %(prog)s ~/Descargas --flatten ~/Todos   # Vacía subcarpetas hacia ~/Todos
-  %(prog)s --move foto.jpg docs ~/Todos    # Mueve archivos/carpetas al destino
-  %(prog)s --move --copy a.txt ~/Backup    # Copia en lugar de mover
-
-Acciones personalizadas (definidas en actions.json):
-  %(prog)s <accion> [args...] # Ej. fsort.py limpiar ~/Descargas
+  %(prog)s <comando> [args...]   # Ejecuta un comando de actions.json
+  %(prog)s ordenar ~/Descargas   # Ordena archivos por extensión
+  %(prog)s info ~/Descargas      # Lista el directorio
+  %(prog)s pdf-a-odt a.pdf ./out # Convierte PDF a ODT
+  %(prog)s --actions             # Lista los comandos disponibles
+  %(prog)s ordenar . --dry-run   # Simula sin aplicar cambios
         """
     )
-    parser.add_argument("directory", nargs="?", default=".", 
-                        help="Directorio a ordenar (por defecto: directorio actual)")
+    parser.add_argument("command", nargs="*", metavar="COMANDO",
+                        help="Comando de actions.json seguido de sus argumentos")
     parser.add_argument("-d", "--dry-run", action="store_true",
                         help="Simular la operación sin mover/copiar archivos")
-    parser.add_argument("-c", "--copy", action="store_true",
-                        help="Copiar archivos en lugar de moverlos")
-    parser.add_argument("-r", "--recursive", action="store_true",
-                        help="Procesar archivos recursivamente en subdirectorios")
-    parser.add_argument("-f", "--flatten", metavar="DESTINO",
-                        help="Vaciar subcarpetas y mover/copiar sus archivos al directorio destino")
-    parser.add_argument("--keep-empty", action="store_true",
-                        help="No eliminar las subcarpetas vacías al usar --flatten")
-    parser.add_argument("-m", "--move", nargs="+", metavar="ITEM",
-                        help="Mover/copiar archivos o carpetas al directorio destino (último argumento)")
     parser.add_argument("--actions", action="store_true",
-                        help="Listar las acciones personalizadas de actions.json")
-    
-    args = parser.parse_args()
+                        help="Listar los comandos personalizados de actions.json")
+
+    args, extra = parser.parse_known_args()
+
+    if not args.actions and not args.command:
+        parser.error("falta el comando (usa --actions para ver los disponibles)")
 
     try:
-        dispatch(args, actions)
+        dispatch(args, extra, actions)
     except FsortError as e:
         print(f"Error: {e}")
         raise SystemExit(1)
 
 
-def dispatch(args, actions: dict):
+def dispatch(args, extra: list, actions: dict):
     if args.actions:
         if not actions:
             print("No hay acciones definidas en actions.json.")
@@ -327,18 +366,18 @@ def dispatch(args, actions: dict):
                 print(f"  {name}: {desc}")
         return
 
-    directory = Path(args.directory).expanduser().resolve()
+    command, *action_args = args.command
+    action_args.extend(extra)
 
-    if args.move:
-        items = args.move[:-1]
-        dest = Path(args.move[-1]).expanduser().resolve()
-        move_items(items, dest, dry_run=args.dry_run, copy=args.copy)
-    elif args.flatten:
-        dest = Path(args.flatten).expanduser().resolve()
-        flatten_dir(directory, dest, dry_run=args.dry_run, copy=args.copy,
-                    remove_empty=not args.keep_empty)
-    else:
-        sort_files(directory, dry_run=args.dry_run, copy=args.copy, recursive=args.recursive)
+    if command not in actions:
+        print(f"Error: comando desconocido '{command}'. Usa --actions para ver los disponibles.")
+        raise SystemExit(1)
+
+    dry_run = args.dry_run or "-d" in extra
+    if dry_run and "-d" in extra:
+        action_args.remove("-d")
+
+    run_action(command, actions[command], action_args, dry_run)
 
 
 if __name__ == "__main__":
