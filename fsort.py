@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-import json
 import os
 import shlex
 import shutil
@@ -8,20 +7,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-ACTIONS_FILE = Path(__file__).parent / "actions.json"
+from config import ACTIONS_FILE, load_and_validate
 
 
 def load_actions(path: Path = ACTIONS_FILE) -> dict:
-    """Carga las acciones definidas fuera del código en actions.json."""
+    """Carga y valida las acciones definidas fuera del código en actions.json."""
     if not path.exists():
         return {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        return data.get("actions", {})
-    except (json.JSONDecodeError, OSError) as e:
-        print(f"Error al leer {path}: {e}")
-        return {}
+    return load_and_validate(path)
 
 
 def run_action(name: str, action: dict, args: list, dry_run: bool = False):
