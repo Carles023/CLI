@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import os
 import shlex
@@ -314,6 +315,120 @@ def move_items(items: list, dest: Path, dry_run: bool = False, copy: bool = Fals
         print("\n[DRY-RUN] Simulación completada. Usa sin --dry-run para aplicar los cambios.")
     else:
         print(f"\nCompletado: {moved_count} elemento(s) {'copiados' if copy else 'movidos'}.")
+
+
+def _human_size(num: float) -> str:
+    """Formatea un número de bytes a una unidad legible."""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(num) < 1024:
+            return f"{num:.1f} {unit}" if unit != "B" else f"{int(num)} B"
+        num /= 1024
+    return f"{num:.1f} PB"
+
+
+def find_duplicates(directory: Path, dry_run: bool = False, delete: bool = False,
+                    recursive: bool = True, min_size: int = 1):
+    """
+    Detecta archivos duplicados (mismo contenido) comparando primero el tamaño y
+    luego el hash SHA-256. Agrupa los duplicados y muestra cuáles conservar.
+    Con 'delete=True' elimina los redundantes (conserva el más antiguo).
+    """
+    if not directory.exists():
+        raise DirectoryNotFoundError(str(directory))
+
+    if not directory.is_dir():
+        raise NotADirectoryError_(str(directory))
+
+    # Excluir el propio script si está en el directorio
+    script_name = Path(__file__).name
+    if recursive:
+        files = [f for f in directory.rglob("*") if f.is_file()]
+    else:
+        files = [f for f in directory.iterdir() if f.is_file()]
+    files = [f for f in files if f.name != script_name and f.name != "fsort.py"]
+
+    # Paso 1: agrupar por tamaño (descarta comparaciones de hash costosas)
+    by_size: dict = {}
+    for file_path in files:
+        try:
+            size = file_path.stat().st_size
+        except OSError:
+            continue
+        if size < min_size:
+            continue
+        by_size.setdefault(size, []).append(file_path)
+
+    # Paso 2: calcular hash solo a los tamaños con más de un candidato
+    by_hash: dict = {}
+    for size, candidates in by_size.items():
+        if len(candidates) < 2:
+            continue
+        for file_path in candidates:
+            digest = _sha256(file_path)
+            if digest is None:
+                continue
+            by_hash.setdefault((size, digest), []).append(file_path)
+
+    groups = [paths for paths in by_hash.values() if len(paths) > 1]
+
+    if not groups:
+        print("No se encontraron archivos duplicados.")
+        return
+
+    groups.sort(key=lambda paths: paths[0].stat().st_size * (len(paths) - 1), reverse=True)
+
+    total_groups = len(groups)
+    wasted = 0
+    deleted_count = 0
+
+    for idx, paths in enumerate(groups, 1):
+        size = paths[0].stat().st_size
+        # Conservar el más antiguo (menor mtime) como "original"
+        paths_sorted = sorted(paths, key=lambda p: p.stat().st_mtime)
+        keep, *redundant = paths_sorted
+        wasted += size * len(redundant)
+
+        print(f"[{idx}/{total_groups}] {_human_size(size)} c/u — {len(paths)} copias:")
+        print(f"  Conservar: {keep}")
+        for dup in redundant:
+            if delete:
+                if dry_run:
+                    print(f"  [DRY-RUN] Eliminaría: {dup}")
+                    continue
+                try:
+                    dup.unlink()
+                    print(f"  Eliminado: {dup}")
+                    deleted_count += 1
+                except Exception as e:
+                    raise OperationError(f"{dup}: {e}")
+            else:
+                print(f"  Duplicado: {dup}")
+
+    print()
+    if delete:
+        if dry_run:
+            print(f"[DRY-RUN] {total_groups} grupo(s) de duplicados. "
+                  f"Se liberarían {_human_size(wasted)}. "
+                  "Usa sin --dry-run para eliminar los duplicados.")
+        else:
+            print(f"Completado: {deleted_count} archivo(s) duplicado(s) eliminados. "
+                  f"Liberado: {_human_size(wasted)}.")
+    else:
+        print(f"Encontrados {total_groups} grupo(s) de duplicados. "
+              f"Espacio recuperable: {_human_size(wasted)}.")
+        print("Usa 'duplicados-eliminar' para eliminar los redundantes.")
+
+
+def _sha256(file_path: Path):
+    """Devuelve el SHA-256 del contenido del archivo, o None si no se puede leer."""
+    hasher = hashlib.sha256()
+    try:
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                hasher.update(chunk)
+    except OSError:
+        return None
+    return hasher.hexdigest()
 
 
 def main():

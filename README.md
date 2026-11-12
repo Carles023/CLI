@@ -25,6 +25,8 @@ Una herramienta CLI simple para organizar automáticamente tus archivos en carpe
 | `vaciar-copiar` | Igual que 'vaciar' pero copia los archivos y conserva las subcarpetas | `fsort.py vaciar-copiar <directorio> <destino>` |
 | `mover` | Mueve archivos o carpetas ({1}...{n-1}) al directorio destino (último argumento) | `fsort.py mover <elemento>... <destino>` |
 | `mover-copiar` | Copia archivos o carpetas al directorio destino en lugar de moverlos | `fsort.py mover-copiar <elemento>... <destino>` |
+| `duplicados` | Detecta archivos duplicados (mismo contenido) en un directorio mostrando los grupos y el espacio recuperable | `fsort.py duplicados <directorio>` |
+| `duplicados-eliminar` | Igual que 'duplicados' pero elimina los archivos redundantes conservando el más antiguo de cada grupo | `fsort.py duplicados-eliminar <directorio>` |
 
 ## Uso
 

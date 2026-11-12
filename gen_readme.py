@@ -25,6 +25,8 @@ def build_table(actions: dict) -> str:
             usage += " <directorio> <destino>"
         elif name in ("mover", "mover-copiar"):
             usage += " <elemento>... <destino>"
+        elif name.startswith("duplicados"):
+            usage += " <directorio>"
         else:
             usage += " <directorio>"
         rows.append(f"| `{name}` | {desc} | `{usage}` |")

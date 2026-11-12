@@ -54,6 +54,18 @@
       "type": "python",
       "func": "move_items",
       "kwargs": {"copy": true}
+    },
+    "duplicados": {
+      "description": "Detecta archivos duplicados (mismo contenido) en un directorio mostrando los grupos y el espacio recuperable",
+      "type": "python",
+      "func": "find_duplicates",
+      "kwargs": {}
+    },
+    "duplicados-eliminar": {
+      "description": "Igual que 'duplicados' pero elimina los archivos redundantes conservando el más antiguo de cada grupo",
+      "type": "python",
+      "func": "find_duplicates",
+      "kwargs": {"delete": true}
     }
   }
 }
