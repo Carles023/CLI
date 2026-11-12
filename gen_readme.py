@@ -27,6 +27,10 @@ def build_table(actions: dict) -> str:
             usage += " <elemento>... <destino>"
         elif name.startswith("duplicados"):
             usage += " <directorio>"
+        elif name.startswith("mas-grandes"):
+            usage += " <directorio> [top]"
+        elif name.startswith("vaciar-papelera"):
+            usage += " [papelera]"
         else:
             usage += " <directorio>"
         rows.append(f"| `{name}` | {desc} | `{usage}` |")

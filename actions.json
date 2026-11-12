@@ -66,6 +66,30 @@
       "type": "python",
       "func": "find_duplicates",
       "kwargs": {"delete": true}
+    },
+    "mas-grandes": {
+      "description": "Lista los archivos más grandes de un directorio (top N, por defecto 10). Acepta 'top' como segundo argumento",
+      "type": "python",
+      "func": "largest_files",
+      "kwargs": {}
+    },
+    "mas-grandes-eliminar": {
+      "description": "Igual que 'mas-grandes' pero elimina los N archivos más grandes. Usa --dry-run para simular",
+      "type": "python",
+      "func": "largest_files",
+      "kwargs": {"delete": true}
+    },
+    "vaciar-papelera": {
+      "description": "Muestra el contenido de la papelera (por defecto ./trash o FSORT_TRASH_DIR) sin borrar",
+      "type": "python",
+      "func": "empty_trash",
+      "kwargs": {}
+    },
+    "vaciar-papelera-ya": {
+      "description": "Vacía la papelera eliminando permanentemente su contenido. Acepta la papelera como argumento opcional. Usa --dry-run para simular",
+      "type": "python",
+      "func": "empty_trash",
+      "kwargs": {"delete": true}
     }
   }
 }
