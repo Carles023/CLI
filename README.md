@@ -56,7 +56,18 @@ python3 fsort.py ordenar . --dry-run
 | --- | --- |
 | `-d, --dry-run` | Simula la operación sin mover/copiar archivos |
 | `--actions` | Lista los comandos personalizados de `actions.json` |
+| `--actions-file RUTA` | Usa un `actions.json` alternativo (por defecto, el del script) |
 | `-h, --help` | Muestra la ayuda |
+
+## Errores
+
+`actions.json` se valida **antes** de ejecutar cualquier comando (estructura, campos, marcadores `{n}` y existencia de las funciones `func`). Si algo falla, la terminal muestra el porqué con una sugerencia de solución:
+
+```
+✗ Error: El directorio no existe: descargss
+  Sugerencia: Comprueba la ruta; si el directorio aún no existe, créalo antes.
+  Ejemplo: fsort.py ordenar <directorio>
+```
 
 ## Añadir o editar comandos
 

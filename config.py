@@ -139,7 +139,10 @@ def validate(data: object) -> list:
 def load_and_validate(path: Path = ACTIONS_FILE) -> dict:
     """Carga el JSON, lo valida (incluidas las funciones) y devuelve las acciones. Lanza una excepción si es inválido."""
     if not path.exists():
-        return {}
+        if path == ACTIONS_FILE:
+            return {}
+        raise ActionsFileNotFoundError(
+            f"{path} (si esperabas usar el actions.json por defecto, omite --actions-file)")
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
@@ -153,6 +156,11 @@ def load_and_validate(path: Path = ACTIONS_FILE) -> dict:
         raise ActionsValidationError([f"{path}: {err}" for err in errors])
 
     return data.get("actions", {})
+
+
+def check_actions(actions: dict) -> list:
+    """Revalida el mapeo de acciones ya cargado y devuelve los errores encontrados (sin volver a leer el archivo)."""
+    return validate({"actions": actions})
 
 
 def main() -> int:

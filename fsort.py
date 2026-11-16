@@ -2,24 +2,49 @@
 import argparse
 import hashlib
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from config import ACTIONS_FILE, ActionsFileInvalidError, ActionsFileNotFoundError, ActionsValidationError, load_and_validate
+from config import ACTIONS_FILE, ActionsValidationError, check_actions, load_and_validate
 from errores import (
     ActionCommandMissingError,
     ActionFuncMissingError,
     ActionFuncNotFoundError,
-    ActionTypeError,
+    ActionNotExecutableError,
     DestinationNotFoundError,
     DirectoryNotFoundError,
     FsortError,
+    InvalidActionError,
+    InvalidArgumentError,
     NotADirectoryError_,
     OperationError,
 )
+
+
+def _suggest(text: str) -> str:
+    """Añade una pista de solución al mensaje cuando aplica."""
+    lowered = text.lower()
+    if "no es un directorio" in lowered:
+        return " La ruta indicada es un archivo; necesitas una carpeta (usa por ejemplo 'dirname <ruta>')."
+    if "destino no existe" in lowered:
+        return " Crea el directorio de destino o indica una ruta existente."
+    if "no existe" in lowered and "directorio" in lowered:
+        return " Comprueba la ruta; si el directorio aún no existe, créalo antes."
+    if "no existe" in lowered and "destino" in lowered:
+        return " Crea el directorio de destino o indica una ruta existente."
+    if "debe ser un entero" in lowered or "debe ser mayor que 0" in lowered:
+        return " Pasa un número entero mayor que cero (ej: '5')."
+    if "falta el directorio" in lowered:
+        return " Indica el directorio como argumento (ej: 'fsort.py ordenar <directorio>')."
+    if "falta el destino" in lowered:
+        return " Añade el destino como segundo argumento (ej: 'fsort.py vaciar <origen> <destino>')."
+    if "al menos un elemento" in lowered:
+        return " Indica al menos un elemento y un directorio destino."
+    return ""
 
 
 def load_actions(path: Path = ACTIONS_FILE) -> dict:
@@ -27,8 +52,23 @@ def load_actions(path: Path = ACTIONS_FILE) -> dict:
     return load_and_validate(path)
 
 
+def _checked_dir(arg, action_name: str) -> Path:
+    """Convierte el argumento en Path (con ~ resuelto) y comprueba que exista con la ruta indicada."""
+    if arg is None:
+        raise InvalidArgumentError(
+            f"'{action_name}': falta el directorio (fsort.py {action_name} <directorio>)")
+    p = Path(arg).expanduser()
+    if not p.exists():
+        raise DirectoryNotFoundError(str(p))
+    return p.resolve()
+
+
 def run_action(name: str, action: dict, args: list, dry_run: bool = False):
     """Ejecuta una acción definida en el JSON. Soporta tipos 'command' y 'python'."""
+    if not isinstance(action, dict):
+        raise InvalidActionError(
+            f"la acción '{name}' debe ser un objeto, no '{type(action).__name__}'")
+
     action_type = action.get("type")
 
     if action_type == "python":
@@ -36,11 +76,26 @@ def run_action(name: str, action: dict, args: list, dry_run: bool = False):
         return
 
     if action_type != "command":
-        raise ActionTypeError(str(action_type))
+        raise ActionNotExecutableError(
+            f"el tipo '{action_type}' de la acción '{name}' no está soportado "
+            "(válidos: 'command', 'python')")
 
     command = action.get("command")
     if not command:
-        raise ActionCommandMissingError(name)
+        raise ActionCommandMissingError(
+            f"la acción '{name}' (tipo 'command') no define el campo 'command'")
+
+    placeholders = {int(n) for n in re.findall(r"\{(\d+)\}", command)}
+    if placeholders and len(args) < max(placeholders):
+        faltan = sorted(set(range(1, max(placeholders) + 1)) - set(range(1, len(args) + 1)))
+        raise InvalidArgumentError(
+            f"'{name}': la acción usa los marcadores "
+            f"{', '.join('{%d}' % p for p in sorted(placeholders))} "
+            f"pero faltan argumentos (faltan {{{faltan[0]}}}..{{{faltan[-1]}}})"
+            if faltan else
+            f"'{name}': la acción usa los marcadores "
+            f"{', '.join('{%d}' % p for p in sorted(placeholders))} "
+            f"pero solo se recibieron {len(args)} argumento(s)")
 
     # Sustituir {1}, {2}, ... por los argumentos del usuario
     for i, arg in enumerate(args, 1):
@@ -50,52 +105,73 @@ def run_action(name: str, action: dict, args: list, dry_run: bool = False):
         print(f"[DRY-RUN] Ejecutaría: {command}")
         return
 
+    argv = shlex.split(command) if os.name != "nt" else command
     try:
-        result = subprocess.run(shlex.split(command) if os.name != "nt" else command,
-                                shell=os.name == "nt")
+        if os.name == "nt":
+            result = subprocess.run(command, shell=True)
+        else:
+            try:
+                result = subprocess.run(argv)
+            except FileNotFoundError:
+                raise ActionNotExecutableError(
+                    f"el programa '{argv[0]}' definido por la acción '{name}' "
+                    "no está instalado o no está en el PATH")
         sys.exit(result.returncode)
-    except FileNotFoundError as e:
-        raise OperationError(str(e))
+    except PermissionError:
+        raise ActionNotExecutableError(
+            f"sin permisos para ejecutar '{argv[0]}' (acción '{name}')")
+    except OSError as e:
+        raise OperationError(f"no se pudo ejecutar '{command}': {e}")
 
 
 def run_python_action(name: str, action: dict, args: list, dry_run: bool = False):
     """Ejecuta una acción de tipo 'python' llamando a la función indicada en 'func'."""
     func_name = action.get("func")
     if not func_name:
-        raise ActionFuncMissingError(name)
+        raise ActionFuncMissingError(
+            f"la acción '{name}' (tipo 'python') no define el campo 'func'")
 
     module = sys.modules[__name__]
     func = getattr(module, func_name, None)
     if not callable(func):
-        raise ActionFuncNotFoundError(func_name)
+        raise ActionFuncNotFoundError(
+            f"la función '{func_name}' de la acción '{name}' no existe en fsort.py")
 
     kwargs = dict(action.get("kwargs") or {})
     kwargs["dry_run"] = dry_run
 
     if func is move_items:
         if len(args) < 2:
-            raise ActionCommandMissingError(f"{name} (requiere al menos un elemento y un destino)")
+            raise InvalidArgumentError(
+                f"'{name}': se necesitan al menos un elemento y un directorio destino")
         items = args[:-1]
-        dest = Path(args[-1]).expanduser().resolve()
+        raw_dest = Path(args[-1]).expanduser()
+        if not raw_dest.exists():
+            raise DestinationNotFoundError(str(raw_dest))
+        dest = raw_dest.resolve()
         func(items, dest, **kwargs)
     elif func is empty_trash:
-        directory = Path(args[0]).expanduser().resolve() if args else None
+        directory = Path(args[0]).expanduser() if args else None
         func(directory, **kwargs)
     elif func is largest_files:
         if not args:
-            raise DirectoryNotFoundError("(sin directorio: indica el directorio como argumento)")
-        directory = Path(args[0]).expanduser().resolve()
+            raise InvalidArgumentError(
+                f"'{name}': falta el directorio (fsort.py {name} <directorio> [top])")
+        directory = _checked_dir(args[0], name)
         if len(args) > 1:
             kwargs["top"] = args[1]
         func(directory, **kwargs)
     else:
-        if not args:
-            raise DirectoryNotFoundError("(sin directorio: indica el directorio como argumento)")
-        directory = Path(args[0]).expanduser().resolve()
+        directory = _checked_dir(args[0] if args else None, name)
         if func is flatten_dir:
             if len(args) < 2:
-                raise DestinationNotFoundError("(sin destino: indica el destino como segundo argumento)")
-            dest = Path(args[1]).expanduser().resolve()
+                raise InvalidArgumentError(
+                    f"'{name}': falta el destino "
+                    f"(fsort.py {name} <directorio> <destino>)")
+            raw_dest = Path(args[1]).expanduser()
+            if not raw_dest.exists():
+                raise DestinationNotFoundError(str(raw_dest))
+            dest = raw_dest.resolve()
             func(directory, dest, **kwargs)
         else:
             func(directory, **kwargs)
@@ -464,10 +540,10 @@ def largest_files(directory: Path, top: int = 10, dry_run: bool = False,
     try:
         top = int(top)
     except (TypeError, ValueError):
-        raise OperationError(f"el número de archivos debe ser un entero, no '{top}'")
+        raise InvalidArgumentError(f"el número de archivos debe ser un entero, no '{top}'")
 
     if top <= 0:
-        raise OperationError(f"el número de archivos debe ser mayor que 0, no '{top}'")
+        raise InvalidArgumentError(f"el número de archivos debe ser mayor que 0, no '{top}'")
 
     script_name = Path(__file__).name
 
@@ -527,11 +603,13 @@ def empty_trash(directory: Path = None, dry_run: bool = False,
     Por defecto usa FSORT_TRASH_DIR o './trash'. Con 'top=N' solo los N más grandes.
     Con 'delete=False' (vista por defecto) solo lista el contenido sin borrar.
     """
-    trash = directory or Path(os.environ.get("FSORT_TRASH_DIR", "trash")).expanduser().resolve()
+    trash = directory or Path(os.environ.get("FSORT_TRASH_DIR", "trash")).expanduser()
 
     if not trash.exists():
         print(f"La papelera ({trash}) no existe. Nada que vaciar.")
         return
+
+    trash = trash.resolve()
 
     if not trash.is_dir():
         raise NotADirectoryError_(str(trash))
@@ -549,7 +627,7 @@ def empty_trash(directory: Path = None, dry_run: bool = False,
     try:
         top = int(top)
     except (TypeError, ValueError):
-        raise OperationError(f"el número de archivos debe ser un entero, no '{top}'")
+        raise InvalidArgumentError(f"el número de archivos debe ser un entero, no '{top}'")
 
     if top > 0:
         sized = sized[:top]
@@ -597,16 +675,42 @@ def empty_trash(directory: Path = None, dry_run: bool = False,
         print(f"Papelera vaciada: {count} elemento(s) eliminados. Liberado: {_human_size(freed)}.")
 
 
+def _extract_actions_file(argv: list):
+    """Extrae el valor de --actions-file de argv sin usar argparse (argparse lo confundiría con --actions)."""
+    path = None
+    rest = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--actions-file":
+            if i + 1 < len(argv):
+                path = argv[i + 1]
+                i += 2
+                continue
+            i += 1
+            continue
+        if a.startswith("--actions-file="):
+            path = a.split("=", 1)[1]
+            i += 1
+            continue
+        rest.append(a)
+        i += 1
+    return path, rest
+
+
 def main():
+    actions_file, rest_argv = _extract_actions_file(sys.argv[1:])
+    actions_path = Path(actions_file).expanduser() if actions_file else ACTIONS_FILE
     try:
-        actions = load_actions()
+        actions = load_actions(actions_path)
     except ActionsValidationError as e:
-        print(f"Error: {e.message}: {e.detail}:")
+        print(f"✗ Error: {e.message} ({e.detail}):")
         for err in e.errors:
             print(f"  - {err}")
+        print("\nCorrige el archivo de acciones y vuelve a intentarlo.")
         raise SystemExit(1)
     except FsortError as e:
-        print(f"Error: {e}")
+        _print_error(e)
         raise SystemExit(1)
 
     parser = argparse.ArgumentParser(
@@ -624,31 +728,54 @@ Ejemplos:
     )
     parser.add_argument("command", nargs="*", metavar="COMANDO",
                         help="Comando de actions.json seguido de sus argumentos")
+    parser.add_argument("--actions-file", metavar="RUTA", default=None,
+                        help="Usar un actions.json alternativo (por defecto, actions.json junto al script)")
     parser.add_argument("-d", "--dry-run", action="store_true",
                         help="Simular la operación sin mover/copiar archivos")
     parser.add_argument("--actions", action="store_true",
                         help="Listar los comandos personalizados de actions.json")
 
-    args, extra = parser.parse_known_args()
+    args, extra = parser.parse_known_args(rest_argv)
 
     if not args.actions and not args.command:
         parser.error("falta el comando (usa --actions para ver los disponibles)")
 
     try:
         dispatch(args, extra, actions)
+    except SystemExit:
+        raise
     except FsortError as e:
-        print(f"Error: {e}")
+        _print_error(e)
+        raise SystemExit(1)
+    except Exception as e:
+        print(f"✗ Error inesperado ({e.__class__.__name__}): {e} "
+              "(revisa el comando o ejecuta con --actions para ver los disponibles)")
         raise SystemExit(1)
 
 
+def _print_error(exc: FsortError):
+    print(f"✗ Error: {exc}")
+    hint = _suggest(str(exc))
+    if hint:
+        print(f"  Sugerencia:{hint}")
+
+
 def dispatch(args, extra: list, actions: dict):
+    errors = check_actions(actions)
+    if errors:
+        print(f"✗ Error: acciones no válidas ({len(errors)}):")
+        for err in errors:
+            print(f"  - {err}")
+        print("\nCorrige el archivo de acciones y vuelve a intentarlo.")
+        raise SystemExit(1)
+
     if args.actions:
         if not actions:
             print("No hay acciones definidas en actions.json.")
         else:
             print("Acciones disponibles (actions.json):")
             for name, action in actions.items():
-                desc = action.get("description", "")
+                desc = action.get("description", "") if isinstance(action, dict) else ""
                 print(f"  {name}: {desc}")
         return
 
@@ -656,14 +783,48 @@ def dispatch(args, extra: list, actions: dict):
     action_args.extend(extra)
 
     if command not in actions:
-        print(f"Error: comando desconocido '{command}'. Usa --actions para ver los disponibles.")
+        disponible = ", ".join(sorted(actions)) or "ninguna"
+        print(f"✗ Error: el comando '{command}' no existe en actions.json. "
+              f"Comandos disponibles: {disponible}.")
         raise SystemExit(1)
 
     dry_run = args.dry_run or "-d" in extra
     if dry_run and "-d" in extra:
         action_args.remove("-d")
 
-    run_action(command, actions[command], action_args, dry_run)
+    action = actions[command]
+    if not isinstance(action, dict):
+        raise InvalidActionError(
+            f"la acción '{command}' debe ser un objeto JSON, "
+            f"no '{type(action).__name__}'")
+
+    action_type = action.get("type")
+    if action_type == "python":
+        if action.get("func") == "move_items":
+            example = f"fsort.py {command} <elemento1> [elemento2 ...] <destino>"
+        elif action.get("func") == "flatten_dir":
+            example = f"fsort.py {command} <directorio> <destino>"
+        elif action.get("func") == "largest_files":
+            example = f"fsort.py {command} <directorio> [top]"
+        elif action.get("func") == "empty_trash":
+            example = f"fsort.py {command} [papelera]"
+        else:
+            example = f"fsort.py {command} <directorio>"
+    elif action_type == "command":
+        example = f"fsort.py {command} [arg...] (los argumentos sustituyen a {{1}}, {{2}}, ...)"
+    else:
+        example = ""
+
+    try:
+        run_action(command, action, action_args, dry_run)
+    except (InvalidArgumentError, DirectoryNotFoundError, DestinationNotFoundError) as e:
+        _print_error(e)
+        if example:
+            print(f"  Ejemplo: {example}")
+        raise SystemExit(1)
+    except FsortError as e:
+        _print_error(e)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

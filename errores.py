@@ -61,6 +61,30 @@ class ActionFuncNotFoundError(FsortError):
     message = "La función de la acción no existe"
 
 
+class ActionNotExecutableError(FsortError):
+    """La acción no se puede ejecutar: tipo no soportado, función no invocable o programa no encontrado."""
+
+    message = "La acción no se puede ejecutar"
+
+
+class InvalidArgumentError(FsortError):
+    """Un argumento pasado a la acción no es válido."""
+
+    message = "Argumento no válido"
+
+
+class InvalidActionError(FsortError):
+    """La acción cargada no tiene una estructura válida para ejecutarse."""
+
+    message = "La acción no tiene una estructura válida"
+
+
+class EmptyActionsFileError(FsortError):
+    """El archivo de acciones existe pero no define ninguna acción."""
+
+    message = "El archivo de acciones está vacío"
+
+
 class DirectoryNotFoundError(FsortError):
     """El directorio indicado no existe."""
 
