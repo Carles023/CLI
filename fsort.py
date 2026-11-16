@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import hashlib
-import json
 import os
 import shlex
 import shutil
@@ -9,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from config import ACTIONS_FILE, ActionsFileInvalidError, ActionsFileNotFoundError, ActionsValidationError, validate
+from config import ACTIONS_FILE, ActionsFileInvalidError, ActionsFileNotFoundError, ActionsValidationError, load_and_validate
 from errores import (
     ActionCommandMissingError,
     ActionFuncMissingError,
@@ -24,26 +23,8 @@ from errores import (
 
 
 def load_actions(path: Path = ACTIONS_FILE) -> dict:
-    """Carga y valida (solo estructura) las acciones definidas en actions.json."""
-    if not path.exists():
-        return {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        raise ActionsFileNotFoundError(str(path))
-    except json.JSONDecodeError as e:
-        raise ActionsFileInvalidError(f"{path} (línea {e.lineno}, columna {e.colno}): {e.msg}")
-
-    validate._skip_funcs = True
-    try:
-        errors = validate(data)
-    finally:
-        del validate._skip_funcs
-    if errors:
-        raise ActionsValidationError([f"{path}: {err}" for err in errors])
-
-    return data.get("actions", {})
+    """Carga y valida (estructura y funciones) las acciones definidas en actions.json."""
+    return load_and_validate(path)
 
 
 def run_action(name: str, action: dict, args: list, dry_run: bool = False):
@@ -619,6 +600,11 @@ def empty_trash(directory: Path = None, dry_run: bool = False,
 def main():
     try:
         actions = load_actions()
+    except ActionsValidationError as e:
+        print(f"Error: {e.message}: {e.detail}:")
+        for err in e.errors:
+            print(f"  - {err}")
+        raise SystemExit(1)
     except FsortError as e:
         print(f"Error: {e}")
         raise SystemExit(1)

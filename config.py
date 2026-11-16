@@ -138,6 +138,8 @@ def validate(data: object) -> list:
 
 def load_and_validate(path: Path = ACTIONS_FILE) -> dict:
     """Carga el JSON, lo valida (incluidas las funciones) y devuelve las acciones. Lanza una excepción si es inválido."""
+    if not path.exists():
+        return {}
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
