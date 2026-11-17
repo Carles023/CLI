@@ -90,6 +90,16 @@
       "type": "python",
       "func": "empty_trash",
       "kwargs": {"delete": true}
+    },
+    "resumir": {
+      "description": "Resume con la IA de Simarro el contenido de un archivo de texto (txt, md, pdf, docx, odt, csv, html...) y lo guarda en <archivo>_resumen.txt o en el destino indicado",
+      "type": "python",
+      "func": "summarize_file",
+      "kwargs": {}
+    },
+    "ai": {
+      "description": "Consulta la IA de Simarro. Pasa la pregunta como argumento (o usa --ai). Requiere FSORT_AI_KEY",
+      "type": "ai"
     }
   }
 }

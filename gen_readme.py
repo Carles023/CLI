@@ -31,6 +31,10 @@ def build_table(actions: dict) -> str:
             usage += " <directorio> [top]"
         elif name.startswith("vaciar-papelera"):
             usage += " [papelera]"
+        elif name == "resumir":
+            usage += " <archivo> [destino.txt]"
+        elif action.get("type") == "ai":
+            usage += ' "tu pregunta"'
         else:
             usage += " <directorio>"
         rows.append(f"| `{name}` | {desc} | `{usage}` |")
@@ -53,7 +57,7 @@ def main() -> int:
         end = readme.index(MARK_END)
     elif TABLE_HEADER in readme:
         start = readme.index(TABLE_HEADER)
-        end = readme.index("\n\n", start)
+        end = readme.index("\n\n## Uso", start)
     else:
         print(f"Error: el README debe contener {MARK_START}/{MARK_END} o la tabla generada.")
         return 1
@@ -62,12 +66,44 @@ def main() -> int:
     if suffix.startswith(MARK_END):
         suffix = suffix[len(MARK_END):]
     new_readme = readme[:start] + build_table(actions) + "\n\n" + suffix.lstrip("\n")
+    new_readme = _ensure_ai_section(new_readme)
 
     with open(README_FILE, "w", encoding="utf-8") as f:
         f.write(new_readme)
 
     print(f"README actualizado con {len(actions)} comando(s).")
     return 0
+
+
+def _ensure_ai_section(readme: str) -> str:
+    """Garantiza que el README documente el modo IA y sus variables de entorno."""
+    if "## IA de Simarro" in readme:
+        return readme
+    section = """## IA de Simarro
+
+Configuración por variables de entorno:
+
+| Variable | Descripción | Por defecto |
+| --- | --- | --- |
+| `FSORT_AI_KEY` | Clave de API (obligatoria) | — |
+| `FSORT_AI_URL` | URL base de la API compatible con OpenAI | `https://ia.simarro/llmapi/v1` |
+| `FSORT_AI_MODEL` | Modelo a usar | `Qwen38-DualSpark-medium` |
+| `FSORT_AI_CA` | Ruta al certificado CA de Simarro | `~/.config/opencode/ca-simarro.crt` |
+| `FSORT_AI_INSECURE` | `1` para desactivar la verificación TLS | desactivado |
+
+```bash
+export FSORT_AI_KEY='sk-...'
+python3 fsort.py --ai "¿Cómo busco duplicados en ~/Descargas?"
+python3 fsort.py ai "¿Qué comando uso para vaciar subcarpetas?"
+```
+
+La IA responde en el idioma de la pregunta y propone comandos `fsort.py` reales.
+
+"""
+    marker = "## Errores"
+    if marker in readme:
+        return readme.replace(marker, section + marker, 1)
+    return readme + "\n" + section
 
 
 if __name__ == "__main__":

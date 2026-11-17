@@ -107,3 +107,33 @@ class OperationError(FsortError):
     """Error al mover, copiar o eliminar un archivo."""
 
     message = "Error al procesar el archivo"
+
+
+class AIError(FsortError):
+    """La petición a la IA de Simarro falló (red, autenticación o respuesta inválida)."""
+
+    message = "Error al consultar la IA de Simarro"
+
+
+class FileReadError(FsortError):
+    """No se pudo leer el archivo indicado o no tiene contenido que resumir."""
+
+    message = "No se pudo leer el archivo"
+
+
+class UnsupportedFileFormatError(FsortError):
+    """El formato del archivo no es compatible para extraer su texto."""
+
+    message = "Formato de archivo no compatible"
+
+
+class FileTooLargeError(FsortError):
+    """El archivo es demasiado grande para enviarlo a la IA."""
+
+    message = "El archivo es demasiado grande"
+
+
+class FileReadError(FsortError):
+    """No se pudo leer el contenido del archivo indicado."""
+
+    message = "No se pudo leer el archivo"

@@ -1,14 +1,49 @@
 #!/usr/bin/env python3
 """Valida actions.json y reporta el campo exacto que falla."""
 import json
+import os
 import re
 import sys
 from pathlib import Path
 
 ACTIONS_FILE = Path(__file__).parent / "actions.json"
 
-VALID_TYPES = {"command", "python"}
+VALID_TYPES = {"command", "python", "ai"}
 PLACEHOLDER_RE = re.compile(r"\{(\d+)\}")
+
+AI_SYSTEM_PROMPT = (
+    "Eres el asistente de 'fsort', una CLI en Python para organizar archivos.\n"
+    "Comandos REALES (usa SOLO estos; NO inventes nombres como sort, dup, big o move):\n"
+    "  ordenar <dir>, ordenar-copiar <dir>, ordenar-recursivo <dir>\n"
+    "  vaciar <dir> <destino>, vaciar-copiar <dir> <destino>\n"
+    "  mover <elem...> <destino>, mover-copiar <elem...> <destino>\n"
+    "  duplicados <dir>, duplicados-eliminar <dir>\n"
+    "  mas-grandes <dir> [N], mas-grandes-eliminar <dir> [N]\n"
+    "  vaciar-papelera [papelera], vaciar-papelera-ya [papelera]\n"
+    "  resumir <archivo> [destino.txt]\n"
+    "  info <dir>, tamano <dir>, limpiar <dir>\n"
+    "Opciones globales: --dry-run (-d) para simular, --actions para listar comandos,\n"
+    "  --ai \"pregunta\" para consultar la IA.\n"
+    "Responde SIEMPRE en el mismo idioma que la pregunta del usuario "
+    "(valenciano, castellano o inglés).\n"
+    "Sé breve y práctico: explica pasos y, si encaja, propón comandos "
+    "'fsort.py <comando> [args...]' exactos de la lista.\n"
+    "Si la pregunta no tiene relación con organizar archivos, indica que solo "
+    "puedes ayudar con eso.\n"
+)
+
+SUMMARY_SYSTEM_PROMPT = (
+    "Eres un asistente de resumen de documentos. Resume el texto que se te pasa "
+    "de forma clara, fiel y sin añadir información que no esté en el original.\n"
+    "Formato de la respuesta (usa exactamente estos encabezados):\n"
+    "RESUMEN EJECUTIVO\n<1-3 frases con la idea principal>\n\n"
+    "PUNTOS CLAVE\n- <punto>\n- <punto>...\n\n"
+    "CONCLUSIONES\n<1-3 frases finales>\n\n"
+    "Idioma: responde SIEMPRE en el mismo idioma que el texto de origen. "
+    "No uses markdown ni comillas alrededor del texto.\n"
+)
+
+SUMMARY_MAX_CHARS = int(os.environ.get("FSORT_SUMMARY_MAX_CHARS", "12000"))
 
 
 from errores import (
@@ -57,6 +92,8 @@ def validate_action(name: str, action: object) -> list:
             errors.append(f"acciones.{name}.kwargs: debe ser un objeto, no '{type(kwargs).__name__}'")
 
         unknown_keys = set(action) - {"description", "type", "func", "kwargs"}
+    elif action_type == "ai":
+        unknown_keys = set(action) - {"description", "type"}
     else:
         if "command" not in action:
             errors.append(f"acciones.{name}.command: campo requerido (falta)")

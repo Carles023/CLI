@@ -2,27 +2,43 @@
 import argparse
 import glob
 import hashlib
+import json as jsonlib
 import os
 import re
 import shlex
 import shutil
+import ssl
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
-from config import ACTIONS_FILE, ActionsValidationError, check_actions, load_and_validate
+from config import (
+    ACTIONS_FILE,
+    AI_SYSTEM_PROMPT,
+    SUMMARY_MAX_CHARS,
+    SUMMARY_SYSTEM_PROMPT,
+    ActionsValidationError,
+    check_actions,
+    load_and_validate,
+)
 from errores import (
     ActionCommandMissingError,
     ActionFuncMissingError,
     ActionFuncNotFoundError,
     ActionNotExecutableError,
+    AIError,
     DestinationNotFoundError,
     DirectoryNotFoundError,
+    FileReadError,
+    FileTooLargeError,
     FsortError,
     InvalidActionError,
     InvalidArgumentError,
     NotADirectoryError_,
     OperationError,
+    UnsupportedFileFormatError,
 )
 
 
@@ -76,10 +92,14 @@ def run_action(name: str, action: dict, args: list, dry_run: bool = False):
         run_python_action(name, action, args, dry_run)
         return
 
+    if action_type == "ai":
+        run_ai_action(name, action, args, dry_run)
+        return
+
     if action_type != "command":
         raise ActionNotExecutableError(
             f"el tipo '{action_type}' de la acción '{name}' no está soportado "
-            "(válidos: 'command', 'python')")
+            "(válidos: 'command', 'python', 'ai')")
 
     command = action.get("command")
     if not command:
@@ -124,6 +144,25 @@ def run_action(name: str, action: dict, args: list, dry_run: bool = False):
             f"sin permisos para ejecutar '{argv[0]}' (acción '{name}')")
     except OSError as e:
         raise OperationError(f"no se pudo ejecutar '{command}': {e}")
+
+
+def run_ai_action(name: str, action: dict, args: list, dry_run: bool = False):
+    """Acción de tipo 'ai': pregunta a la IA de Simarro y muestra la respuesta."""
+    question = " ".join(args).strip()
+
+    if dry_run:
+        print(f"[DRY-RUN] Consultaría la IA de Simarro con la pregunta: "
+              f"'{question or '(interactiva)'}'")
+        return
+
+    if not question:
+        raise InvalidArgumentError(
+            f"'{name}': falta la pregunta "
+            f"(fsort.py {name} \"tu pregunta\" o fsort.py --ai \"tu pregunta\")")
+
+    print(f"Consultando la IA de Simarro ({_ai_config()['model']})...\n")
+    print(ask_ai(question))
+    print()
 
 
 destructive_commands = ("mv", "rm", "cp", "mkdir", "rmdir", "touch", "truncate",
@@ -227,6 +266,13 @@ def run_python_action(name: str, action: dict, args: list, dry_run: bool = False
     elif func is empty_trash:
         directory = Path(args[0]).expanduser() if args else None
         func(directory, **kwargs)
+    elif func is summarize_file:
+        if not args:
+            raise InvalidArgumentError(
+                f"'{name}': falta el archivo (fsort.py {name} <archivo> [destino.txt])")
+        path = Path(args[0]).expanduser()
+        output = Path(args[1]).expanduser() if len(args) > 1 else None
+        func(path, output, **kwargs)
     elif func is largest_files:
         if not args:
             raise InvalidArgumentError(
@@ -615,6 +661,170 @@ def _sha256(file_path: Path):
     return hasher.hexdigest()
 
 
+PLAIN_TEXT_SUFFIXES = {
+    ".txt", ".md", ".markdown", ".rst", ".log", ".csv", ".tsv", ".json",
+    ".xml", ".html", ".htm", ".tex", ".py", ".js", ".ts", ".c", ".cpp",
+    ".h", ".hpp", ".java", ".kt", ".go", ".rs", ".rb", ".php", ".sh",
+    ".yml", ".yaml", ".ini", ".cfg", ".conf", ".epub",
+}
+
+
+def _extract_text(file_path: Path) -> str:
+    """Extrae el texto del archivo usando el lector adecuado según su extensión."""
+    suffix = file_path.suffix.lower()
+
+    if suffix in PLAIN_TEXT_SUFFIXES or suffix == "":
+        return _read_text_file(file_path)
+
+    if suffix == ".pdf":
+        return _extract_with_tool("pdftotext", ["pdftotext", "-layout", str(file_path), "-"],
+                                  file_path)
+
+    if suffix in (".docx", ".odt", ".rtf", ".fodt", ".ott", ".org"):
+        return _extract_with_tool("pandoc", ["pandoc", "-t", "plain", str(file_path)],
+                                  file_path)
+
+    raise UnsupportedFileFormatError(
+        f"{file_path.name} (extensión '{suffix}'). "
+        "Formatos compatibles: texto plano (.txt, .md, .csv, .json, .html, ...), "
+        ".pdf (con 'pdftotext'), .docx/.odt/.rtf (con 'pandoc').")
+
+
+def _read_text_file(file_path: Path) -> str:
+    try:
+        size = file_path.stat().st_size
+        if size == 0:
+            raise FileReadError(f"{file_path} está vacío")
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError as e:
+        raise FileReadError(f"{file_path}: {e}")
+
+
+def _extract_with_tool(program: str, argv: list, file_path: Path) -> str:
+    """Ejecuta una herramienta externa (pdftotext, pandoc) y devuelve su stdout."""
+    try:
+        result = subprocess.run(argv, capture_output=True, timeout=120, check=False)
+    except FileNotFoundError:
+        raise UnsupportedFileFormatError(
+            f"no se encontró la herramienta '{program}' necesaria para leer "
+            f"{file_path.name}. Instálala o convierte el archivo a .txt.")
+    except PermissionError:
+        raise UnsupportedFileFormatError(
+            f"sin permisos para ejecutar '{program}'")
+    except subprocess.TimeoutExpired:
+        raise FileReadError(f"'{program}' tardó demasiado procesando {file_path.name}")
+
+    if result.returncode != 0:
+        err = (result.stderr or b"").decode("utf-8", "replace").strip()[:300]
+        raise FileReadError(f"'{program}' no pudo con {file_path.name}: "
+                            f"{err or f'código {result.returncode}'}")
+
+    out = (result.stdout or b"").decode("utf-8", "replace")
+    if not out.strip():
+        raise FileReadError(
+            f"'{program}' no obtuvo texto de {file_path.name} "
+            "(¿PDF escaneado/sin capa de texto?)")
+    return out
+
+
+def summarize_file(file_path: Path, output: Path = None,
+                   dry_run: bool = False, max_chars: int = None):
+    """
+    Resume con la IA de Simarro el contenido de un archivo de texto y guarda el
+    resumen en un .txt junto al original (o en la ruta indicada).
+    """
+    if file_path is None:
+        raise InvalidArgumentError("falta el archivo (fsort.py resumir <archivo> [destino.txt])")
+
+    path = Path(file_path).expanduser()
+    if not path.exists():
+        raise FileReadError(f"{path} no existe")
+    if not path.is_file():
+        raise InvalidArgumentError(f"{path} no es un archivo")
+
+    limit = max_chars or SUMMARY_MAX_CHARS
+    if dry_run:
+        dest = output or path.with_name(f"{path.stem}_resumen.txt")
+        print(f"[DRY-RUN] Leería {path} ({_human_size(path.stat().st_size)}), "
+              f"enviaría hasta {limit:,} caracteres a la IA ({_ai_config()['model']}) "
+              f"y guardaría el resumen en {dest}.")
+        return
+
+    print(f"Extrayendo texto de {path}...")
+    text = _extract_text(path)
+
+    if not text.strip():
+        raise FileReadError(f"{path}: no se encontró texto que resumir")
+
+    truncated = False
+    if len(text) > limit:
+        text = text[:limit]
+        truncated = True
+
+    print(f"Resumiendo {len(text):,} caracteres con la IA "
+          f"({_ai_config()['model']})...")
+
+    prompt = (
+        "Resume el siguiente documento. "
+        "Sigue EXACTAMENTE el formato de encabezados que se te indica en las "
+        "instrucciones de sistema.\n\n"
+        "--- INICIO DOCUMENTO ---\n"
+        f"{text}\n"
+        "--- FIN DOCUMENTO ---\n"
+    )
+    if truncated:
+        prompt += ("\n(El documento se truncó por límite de tamaño; resume solo "
+                   "lo visible sin mencionarlo.)\n")
+
+    summary = ask_ai(prompt, system_prompt=SUMMARY_SYSTEM_PROMPT)
+    if not summary.strip():
+        raise AIError("la IA devolvió un resumen vacío")
+
+    dest = Path(output).expanduser() if output else path.with_name(f"{path.stem}_resumen.txt")
+    if dest.suffix.lower() != ".txt":
+        dest = dest.with_suffix(".txt")
+    if dest.exists() and not dry_run:
+        counter = 1
+        original = dest
+        while dest.exists():
+            dest = original.with_name(f"{original.stem}_{counter}{original.suffix}")
+            counter += 1
+
+    header = (
+        f"Resumen de: {path.name}\n"
+        f"Generado: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+        f"Modelo: {_ai_config()['model']}\n"
+        + ("Advertencia: el documento original se truncó para el análisis.\n"
+           if truncated else "")
+        + "-" * 70 + "\n\n"
+    )
+
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(header + summary.strip() + "\n")
+    except OSError as e:
+        raise OperationError(f"no se pudo escribir {dest}: {e}")
+
+    print()
+    print(summary.strip())
+    print()
+    print(f"✓ Resumen guardado en {dest}")
+
+
+def _sha256(file_path: Path):
+    """Devuelve el SHA-256 del contenido del archivo, o None si no se puede leer."""
+    hasher = hashlib.sha256()
+    try:
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                hasher.update(chunk)
+    except OSError:
+        return None
+    return hasher.hexdigest()
+
+
 def _dir_size(path: Path) -> int:
     """Suma el tamaño en bytes de todos los archivos dentro de un archivo o carpeta."""
     if path.is_file():
@@ -815,8 +1025,111 @@ def _extract_actions_file(argv: list):
     return path, rest
 
 
+def _extract_assistant(argv: list):
+    """Extrae el texto de --ai/--pregunta (o --ia) de argv, sin usar argparse.
+
+    Si '--ai' aparece sin texto, devuelve '' (cadena vacía) para indicar que se
+    debe preguntar de forma interactiva.
+    """
+    text = None
+    rest = []
+    i = 0
+    flags = ("--ai", "--ia", "--pregunta", "--pregunta-ia", "-P")
+    prefixes = ("--ai=", "--ia=", "--pregunta=", "--pregunta-ia=")
+    while i < len(argv):
+        a = argv[i]
+        if a in flags:
+            nxt = argv[i + 1] if i + 1 < len(argv) else None
+            if nxt is not None and not nxt.startswith("-"):
+                text = nxt
+                i += 2
+                continue
+            if text is None:
+                text = ""
+            i += 1
+            continue
+        if a.startswith(prefixes):
+            text = a.split("=", 1)[1] or ""
+            i += 1
+            continue
+        rest.append(a)
+        i += 1
+    return text, rest
+
+
+def _ssl_context():
+    """Devuelve un SSLContext que confía en el CA de Simarro si está disponible."""
+    ca = Path(os.environ.get("FSORT_AI_CA", Path.home() / ".config/opencode/ca-simarro.crt"))
+    ca = Path(ca).expanduser() if not os.environ.get("FSORT_AI_CA") else Path(ca)
+    if ca.exists():
+        ctx = ssl.create_default_context(cafile=str(ca))
+    else:
+        ctx = ssl.create_default_context()
+    if os.environ.get("FSORT_AI_INSECURE") == "1":
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+def _ai_config() -> dict:
+    return {
+        "base_url": os.environ.get("FSORT_AI_URL", "https://ia.simarro/llmapi/v1"),
+        "api_key": os.environ.get("FSORT_AI_KEY", ""),
+        "model": os.environ.get("FSORT_AI_MODEL", "Qwen38-DualSpark-medium"),
+    }
+
+
+def ask_ai(question: str, system_prompt: str = AI_SYSTEM_PROMPT) -> str:
+    """Envía la pregunta a la IA de Simarro (API OpenAI-compatible) y devuelve su respuesta."""
+    cfg = _ai_config()
+    if not cfg["api_key"]:
+        raise AIError("falta la clave de API. Define FSORT_AI_KEY con tu clave "
+                      "(ej: export FSORT_AI_KEY='sk-...')")
+
+    url = cfg["base_url"].rstrip("/") + "/chat/completions"
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": question})
+    body = jsonlib.dumps({
+        "model": cfg["model"],
+        "messages": messages,
+        "temperature": 0.6,
+    }).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST", headers={
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {cfg['api_key']}",
+    })
+    try:
+        with urllib.request.urlopen(req, context=_ssl_context(), timeout=120) as resp:
+            payload = jsonlib.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:300]
+        if e.code in (401, 403):
+            detail += " — revisa que FSORT_AI_KEY sea correcta"
+        raise AIError(f"HTTP {e.code} al consultar {url}: {detail}")
+    except urllib.error.URLError as e:
+        raise AIError(f"no se pudo conectar con {url} ({e.reason}). "
+                      "Comprueba tu conexión y FSORT_AI_URL")
+    except jsonlib.JSONDecodeError as e:
+        raise AIError(f"respuesta no es JSON válido: {e}")
+
+    try:
+        return payload["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, TypeError) as e:
+        raise AIError(f"respuesta inesperada de la API: {e}")
+
+
+def ai_assistant(question: str):
+    """Modo asistente (--ai): pregunta a la IA de Simarro y muestra la respuesta."""
+    print(f"Consultando la IA de Simarro ({_ai_config()['model']})...\n")
+    print(ask_ai(question))
+    print()
+
+
 def main():
-    actions_file, rest_argv = _extract_actions_file(sys.argv[1:])
+    pre_ai, rest_argv = _extract_assistant(sys.argv[1:])
+    actions_file, rest_argv = _extract_actions_file(rest_argv)
     actions_path = Path(actions_file).expanduser() if actions_file else ACTIONS_FILE
     try:
         actions = load_actions(actions_path)
@@ -831,7 +1144,8 @@ def main():
         raise SystemExit(1)
 
     parser = argparse.ArgumentParser(
-        description="Ejecuta comandos definidos en actions.json (ordenar, vaciar, mover, info, ...).",
+        description="Ejecuta comandos definidos en actions.json (ordenar, vaciar, mover, info, ...) "
+                    "o consulta la IA de Simarro.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Ejemplos:
@@ -841,6 +1155,7 @@ Ejemplos:
   %(prog)s pdf-a-odt a.pdf ./out # Convierte PDF a ODT
   %(prog)s --actions             # Lista los comandos disponibles
   %(prog)s ordenar . --dry-run   # Simula sin aplicar cambios
+  %(prog)s --ai "¿Cómo ordeno mis descargas?"  # Pregunta a la IA de Simarro
         """
     )
     parser.add_argument("command", nargs="*", metavar="COMANDO",
@@ -851,8 +1166,37 @@ Ejemplos:
                         help="Simular la operación sin mover/copiar archivos")
     parser.add_argument("--actions", action="store_true",
                         help="Listar los comandos personalizados de actions.json")
+    parser.add_argument("--ai", "--ia", "--pregunta", metavar="TEXTO",
+                        nargs="?", const="", default=None,
+                        help="Pregunta a la IA de Simarro y muestra la respuesta "
+                             "(requiere FSORT_AI_KEY)")
 
     args, extra = parser.parse_known_args(rest_argv)
+
+    # Combinar --ai/--ia/--pregunta: puede venir de argparse o del preprocesador.
+    question = args.ai if args.ai is not None else pre_ai
+    if question is not None:
+        if args.dry_run:
+            print(f"[DRY-RUN] Consultaría la IA de Simarro con la pregunta: "
+                  f"'{question.strip() or '(interactiva)'}'")
+            return
+        if not question.strip():
+            try:
+                question = input("Pregunta para la IA: ")
+            except EOFError:
+                print("✗ Error: no se recibió ninguna pregunta. "
+                      "Pásala como texto: fsort.py --ai \"tu pregunta\"",
+                      file=sys.stderr)
+                raise SystemExit(1)
+            if not question.strip():
+                print("✗ Error: la pregunta no puede estar vacía.", file=sys.stderr)
+                raise SystemExit(1)
+        try:
+            ai_assistant(question.strip())
+        except AIError as e:
+            _print_error(e)
+            raise SystemExit(1)
+        return
 
     if not args.actions and not args.command:
         parser.error("falta el comando (usa --actions para ver los disponibles)")
@@ -861,7 +1205,7 @@ Ejemplos:
         dispatch(args, extra, actions)
     except SystemExit:
         raise
-    except FsortError as e:
+    except (FsortError, InvalidArgumentError) as e:
         _print_error(e)
         raise SystemExit(1)
     except Exception as e:
@@ -927,6 +1271,8 @@ def dispatch(args, extra: list, actions: dict):
             example = f"fsort.py {command} <directorio>"
         elif action.get("func") == "empty_trash":
             example = f"fsort.py {command} [papelera]"
+        elif action.get("func") == "summarize_file":
+            example = f"fsort.py {command} <archivo> [destino.txt]"
         else:
             example = f"fsort.py {command} <directorio>"
     elif action_type == "command":

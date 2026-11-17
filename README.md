@@ -31,6 +31,8 @@ Una herramienta CLI simple para organizar automáticamente tus archivos en carpe
 | `mas-grandes-eliminar` | Igual que 'mas-grandes' pero elimina los N archivos más grandes. Usa --dry-run para simular | `fsort.py mas-grandes-eliminar <directorio> [top]` |
 | `vaciar-papelera` | Muestra el contenido de la papelera (por defecto ./trash o FSORT_TRASH_DIR) sin borrar | `fsort.py vaciar-papelera [papelera]` |
 | `vaciar-papelera-ya` | Vacía la papelera eliminando permanentemente su contenido. Acepta la papelera como argumento opcional. Usa --dry-run para simular | `fsort.py vaciar-papelera-ya [papelera]` |
+| `resumir` | Resume con la IA de Simarro el contenido de un archivo de texto (txt, md, pdf, docx, odt, csv, html...) y lo guarda en <archivo>_resumen.txt o en el destino indicado | `fsort.py resumir <archivo> [destino.txt]` |
+| `ai` | Consulta la IA de Simarro. Pasa la pregunta como argumento (o usa --ai). Requiere FSORT_AI_KEY | `fsort.py ai "tu pregunta"` |
 
 ## Uso
 
@@ -58,6 +60,42 @@ python3 fsort.py ordenar . --dry-run
 | `--actions` | Lista los comandos personalizados de `actions.json` |
 | `--actions-file RUTA` | Usa un `actions.json` alternativo (por defecto, el del script) |
 | `-h, --help` | Muestra la ayuda |
+
+## IA de Simarro
+
+Configuración por variables de entorno:
+
+| Variable | Descripción | Por defecto |
+| --- | --- | --- |
+| `FSORT_AI_KEY` | Clave de API (obligatoria) | — |
+| `FSORT_AI_URL` | URL base de la API compatible con OpenAI | `https://ia.simarro/llmapi/v1` |
+| `FSORT_AI_MODEL` | Modelo a usar | `Qwen38-DualSpark-medium` |
+| `FSORT_AI_CA` | Ruta al certificado CA de Simarro | `~/.config/opencode/ca-simarro.crt` |
+| `FSORT_AI_INSECURE` | `1` para desactivar la verificación TLS | desactivado |
+
+```bash
+export FSORT_AI_KEY='sk-...'
+python3 fsort.py --ai "¿Cómo busco duplicados en ~/Descargas?"
+python3 fsort.py ai "¿Qué comando uso para vaciar subcarpetas?"
+python3 fsort.py resumir informe.pdf            # -> informe_resumen.txt
+python3 fsort.py resumir paper.docx resumen.txt # destino a medida
+```
+
+### `resumir`
+
+Extrae el texto del archivo, envía-lo a la IA de Simarro y guarda el resultado en un `.txt`
+con cabecera (nombre, fecha, modelo, aviso de truncado si aplica).
+
+- **Formatos**: texto (`.txt .md .rst .log .csv .tsv .json .xml .html .tex .py .sh .yml`...),
+  `.pdf` (usa `pdftotext`), `.docx .odt .rtf .org` (usa `pandoc`).
+- **Límite de entrada**: 12.000 caracteres por defecto (configurable amb
+  `FSORT_SUMMARY_MAX_CHARS`). Si el archivo es más largo, se trunca y se avisa al resumen.
+- **Salida**: junto al original (`<stem>_resumen.txt`) o en la ruta indicada
+  (siempre `.txt`). Si ya existe, se crea `<stem>_resumen_1.txt`, etc. — nunca sobrescribe.
+- **Estructura**: `RESUMEN EJECUTIVO` / `PUNTOS CLAVE` / `CONCLUSIONES`, en el idioma del documento.
+- `--dry-run` no consume tokens: solo dice qué haría.
+
+La IA responde en el idioma de la pregunta y propone comandos `fsort.py` reales.
 
 ## Errores
 
