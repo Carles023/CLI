@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import glob
 import hashlib
 import os
 import re
@@ -103,6 +104,7 @@ def run_action(name: str, action: dict, args: list, dry_run: bool = False):
 
     if dry_run:
         print(f"[DRY-RUN] Ejecutaría: {command}")
+        _dry_run_command(command)
         return
 
     argv = shlex.split(command) if os.name != "nt" else command
@@ -122,6 +124,78 @@ def run_action(name: str, action: dict, args: list, dry_run: bool = False):
             f"sin permisos para ejecutar '{argv[0]}' (acción '{name}')")
     except OSError as e:
         raise OperationError(f"no se pudo ejecutar '{command}': {e}")
+
+
+destructive_commands = ("mv", "rm", "cp", "mkdir", "rmdir", "touch", "truncate",
+                        "dd", "tee", "ln", "rsync")
+
+
+
+def _dry_run_command(command: str):
+    """Simula un comando 'type: command' listando lo que tocaría, sin ejecutar nada.
+
+    Analiza pipes, '&&' o ';' y muestra los ficheros reales que afectan los
+    comandos destructivos (mv, rm, cp, ...) sin alterarlos.
+    """
+    try:
+        segments = shlex.split(command)
+    except ValueError:
+        print("  (no se pudo analizar el comando; omite la simulación detallada)")
+        return
+
+    # Dividir en segmentos por operadores de shell básicos
+    groups, current = [], []
+    i = 0
+    while i < len(segments):
+        tok = segments[i]
+        if tok in ("&&", "||", ";", "|"):
+            if current:
+                groups.append(current)
+                current = []
+            i += 1
+            continue
+        current.append(tok)
+        i += 1
+    if current:
+        groups.append(current)
+
+    any_destructive = False
+    for group in groups:
+        if not group:
+            continue
+        program = Path(group[0]).name
+        if program not in destructive_commands:
+            continue
+        any_destructive = True
+        paths = [a for a in group[1:] if not a.startswith("-")]
+        expanded = []
+        for a in paths:
+            if any(c in a for c in "*?["):
+                if os.path.isabs(a):
+                    base, pattern = "/", a.lstrip("/")
+                else:
+                    base, pattern = ".", a
+                matched = sorted(
+                    os.path.join(base, m) for m in glob.glob(pattern, root_dir=base))
+                expanded.extend(matched or [a])
+            else:
+                expanded.append(a)
+        if program in ("mv", "cp", "rsync"):
+            if len(expanded) >= 2:
+                dest = expanded[-1]
+                for src in expanded[:-1]:
+                    verb = "movería" if program == "mv" else "copiaría"
+                    print(f"  [DRY-RUN] {verb}: {src} -> {dest}")
+            else:
+                print(f"  [DRY-RUN] {program} {' '.join(expanded)}")
+        elif program in ("rm", "rmdir"):
+            for p in expanded:
+                print(f"  [DRY-RUN] eliminaría: {p}")
+        else:
+            print(f"  [DRY-RUN] {program} {' '.join(expanded)}")
+
+    if not any_destructive:
+        print("  (el comando no parece modificar archivos; no hay nada que simular)")
 
 
 def run_python_action(name: str, action: dict, args: list, dry_run: bool = False):
