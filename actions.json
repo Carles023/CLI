@@ -62,10 +62,10 @@
       "kwargs": {}
     },
     "duplicados-eliminar": {
-      "description": "Igual que 'duplicados' pero elimina los archivos redundantes conservando el más antiguo de cada grupo",
+      "description": "Detecta archivos duplicados y, en interactivos, deja elegir qué copia conservar de cada grupo (por defecto conserva el más antiguo y elimina el resto)",
       "type": "python",
       "func": "find_duplicates",
-      "kwargs": {"delete": true}
+      "kwargs": {"delete": true, "interactive": true}
     },
     "mas-grandes": {
       "description": "Lista los archivos más grandes de un directorio (top N, por defecto 10). Acepta 'top' como segundo argumento",

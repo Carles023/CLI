@@ -394,11 +394,12 @@ def _human_size(num: float) -> str:
 
 
 def find_duplicates(directory: Path, dry_run: bool = False, delete: bool = False,
-                    recursive: bool = True, min_size: int = 1):
+                    interactive: bool = False, recursive: bool = True, min_size: int = 1):
     """
     Detecta archivos duplicados (mismo contenido) comparando primero el tamaño y
     luego el hash SHA-256. Agrupa los duplicados y muestra cuáles conservar.
     Con 'delete=True' elimina los redundantes (conserva el más antiguo).
+    Con 'interactive=True' permite elegir qué copia conservar en cada grupo.
     """
     if not directory.exists():
         raise DirectoryNotFoundError(str(directory))
@@ -444,21 +445,62 @@ def find_duplicates(directory: Path, dry_run: bool = False, delete: bool = False
 
     groups.sort(key=lambda paths: paths[0].stat().st_size * (len(paths) - 1), reverse=True)
 
+    interactive = bool(interactive)
     total_groups = len(groups)
     wasted = 0
     deleted_count = 0
+    # Sin TTY (p. ej. entrada pipeada) no se puede preguntar: se actúa en lote
+    interactive = interactive and not dry_run and sys.stdin.isatty()
 
     for idx, paths in enumerate(groups, 1):
         size = paths[0].stat().st_size
-        # Conservar el más antiguo (menor mtime) como "original"
         paths_sorted = sorted(paths, key=lambda p: p.stat().st_mtime)
-        keep, *redundant = paths_sorted
+
+        print(f"[{idx}/{total_groups}] {_human_size(size)} c/u — {len(paths_sorted)} copias:")
+
+        if interactive:
+            print("  Elige qué copia conservar:")
+            for n, p in enumerate(paths_sorted, 1):
+                print(f"    {n}) {p}")
+            while True:
+                try:
+                    raw = input(f"  Opción [1-{len(paths_sorted)}] "
+                                "(Enter=1, s=saltar grupo, q=terminar): ").strip().lower()
+                except EOFError:
+                    print("\nEntrada interrumpida: se detiene la revisión de grupos.")
+                    interactive = False
+                    raw = "q"
+                if raw == "":
+                    choice = 1
+                    break
+                if raw == "q":
+                    print("\nOperación cancelada por el usuario.")
+                    raise SystemExit(0)
+                if raw in ("s", "n", "skip"):
+                    choice = None
+                    break
+                if raw.isdigit() and 1 <= int(raw) <= len(paths_sorted):
+                    choice = int(raw)
+                    break
+                print(f"  Opción no válida. Elige un número entre 1 y {len(paths_sorted)}, "
+                      "'s' para saltar o 'q' para salir.")
+            if choice is None:
+                for p in paths_sorted:
+                    print(f"  Duplicado (omitido): {p}")
+                print()
+                continue
+            keep = paths_sorted[choice - 1]
+            redundant = [p for p in paths_sorted if p != keep]
+            print(f"  Conservar: {keep}")
+        else:
+            # Conservar el más antiguo (menor mtime) como "original"
+            keep, *redundant = paths_sorted
+            print(f"  Conservar: {keep}")
+
         wasted += size * len(redundant)
 
-        print(f"[{idx}/{total_groups}] {_human_size(size)} c/u — {len(paths)} copias:")
-        print(f"  Conservar: {keep}")
         for dup in redundant:
-            if delete:
+            if delete or interactive:
                 if dry_run:
                     print(f"  [DRY-RUN] Eliminaría: {dup}")
                     continue
@@ -470,9 +512,10 @@ def find_duplicates(directory: Path, dry_run: bool = False, delete: bool = False
                     raise OperationError(f"{dup}: {e}")
             else:
                 print(f"  Duplicado: {dup}")
+        print()
 
     print()
-    if delete:
+    if delete or deleted_count:
         if dry_run:
             print(f"[DRY-RUN] {total_groups} grupo(s) de duplicados. "
                   f"Se liberarían {_human_size(wasted)}. "
@@ -806,6 +849,8 @@ def dispatch(args, extra: list, actions: dict):
             example = f"fsort.py {command} <directorio> <destino>"
         elif action.get("func") == "largest_files":
             example = f"fsort.py {command} <directorio> [top]"
+        elif action.get("func") == "find_duplicates":
+            example = f"fsort.py {command} <directorio>"
         elif action.get("func") == "empty_trash":
             example = f"fsort.py {command} [papelera]"
         else:
