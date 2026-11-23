@@ -117,6 +117,35 @@ def cprint(*args, sep=" ", end="\n", file=None, **kwargs):
     print("\n".join(lines), end=end, file=file, **kwargs)
 
 
+def _confirm(prompt: str = "Confirmar? [s/N] ", default_no: bool = True) -> bool:
+    """Pide confirmacion en un terminal interactivo.
+
+    - Sin TTY (stdin o /dev/tty no disponibles, p. ej. pipeado): avisa y devuelve
+      False (medida de seguridad: nunca borra a traicion).
+    - Con variable de entorno FSORT_YES=1 (o --yes via kwargs): no pregunta, confirma.
+    - Escribe el prompt a /dev/tty (si existe) para que se vea aunque el stdout
+      este redirigido, y lee la respuesta de stdin.
+    Devuelve True solo con 's'/'si'/'yes'/'y' (o confirmacion automatica).
+    """
+    if os.environ.get("FSORT_YES") == "1":
+        return True
+    if not sys.stdin.isatty():
+        cprint("  (sin TTY: no se puede confirmar; omitido. Usa FSORT_YES=1 o --yes)")
+        return False
+    try:
+        fd = os.open("/dev/tty", os.O_WRONLY)
+        with os.fdopen(fd, "w", encoding="utf-8") as tty:
+            tty.write(prompt)
+            tty.flush()
+    except OSError:
+        cprint(prompt, end="", flush=True)
+    try:
+        ans = sys.stdin.readline().strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return ans in ("s", "si", "sí", "yes", "y")
+
+
 def _suggest(text: str) -> str:
     """Añade una pista de solución al mensaje cuando aplica."""
     lowered = text.lower()
@@ -947,10 +976,11 @@ def _match_name(name: str, pattern: str) -> bool:
 
 
 def largest_files(directory: Path, top: int = 10, dry_run: bool = False,
-                  delete: bool = False, ext: str = "*"):
+                  delete: bool = False, ext: str = "*", assume_yes: bool = False):
     """
     Lista los archivos más grandes de un directorio (ordenados por tamaño).
     'ext' permite filtrar por extensión (ej: 'pdf'). Con 'delete=True' elimina los N.
+    Con 'delete=True' pide confirmacion salvo dry_run o assume_yes (o FSORT_YES=1).
     """
     if not directory.exists():
         raise DirectoryNotFoundError(str(directory))
@@ -996,8 +1026,16 @@ def largest_files(directory: Path, top: int = 10, dry_run: bool = False,
         cprint(f"  {rank:>2}. {_human_size(size):>9}  {file_path}")
 
     cprint()
-    if delete:
-        for size, file_path in selected:
+    if delete and not dry_run:
+        cprint(f"Se eliminaran {len(selected)} archivo(s) ({_human_size(total)}).")
+        if not (assume_yes or os.environ.get("FSORT_YES") == "1"):
+            if not _confirm("Confirmar eliminacion? [s/N] "):
+                cprint("Cancelado: no se ha eliminado nada.")
+                return
+        else:
+            cprint("  (--yes/FSORT_YES: confirmado automaticamente)")
+    for size, file_path in selected:
+        if delete:
             if dry_run:
                 cprint(f"[DRY-RUN] Eliminaría: {file_path}")
                 continue
@@ -1010,7 +1048,7 @@ def largest_files(directory: Path, top: int = 10, dry_run: bool = False,
     if delete:
         if dry_run:
             cprint(f"[DRY-RUN] Se liberarían {_human_size(total)}. "
-                  "Usa sin --dry-run para eliminar.")
+                   "Usa sin --dry-run para eliminar.")
         else:
             cprint(f"Completado: liberado {_human_size(total)}.")
     else:
@@ -1296,12 +1334,19 @@ Ejemplos:
                         help="Simular la operación sin mover/copiar archivos")
     parser.add_argument("--actions", action="store_true",
                         help="Listar los comandos personalizados de actions.json")
+    parser.add_argument("--yes", "-y", action="store_true",
+                        help="No pedir confirmacion en acciones destructivas "
+                             "(equivale a FSORT_YES=1)")
     parser.add_argument("--ai", "--ia", "--pregunta", metavar="TEXTO",
                         nargs="?", const="", default=None,
                         help="Pregunta a la IA de Simarro y muestra la respuesta "
                              "(requiere FSORT_AI_KEY)")
 
     args, extra = parser.parse_known_args(rest_argv)
+
+    # --yes/-y global: confirma acciones destructivas sin preguntar
+    if getattr(args, "yes", False):
+        os.environ["FSORT_YES"] = "1"
 
     # Combinar --ai/--ia/--pregunta: puede venir de argparse o del preprocesador.
     question = args.ai if args.ai is not None else pre_ai
