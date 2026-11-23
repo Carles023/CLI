@@ -14,7 +14,7 @@ Una herramienta CLI simple para organizar automáticamente tus archivos en carpe
 
 | Comando | Descripción | Uso |
 | --- | --- | --- |
-| `limpiar` | Mueve archivos temporales (.tmp, .bak) del directorio {1} a la papelera (FSORT_TRASH_DIR o ./trash, que se crea si falta) | `fsort.py limpiar <arg1>` |
+| `limpiar` | Mueve archivos temporales y de respaldo (.tmp, .temp, .bak, .old, ~, .swp, .log, basura de sistema) del directorio {1} a la papelera (FSORT_TRASH_DIR o ./trash). Recursivo. Pide confirmacion salvo --yes | `fsort.py limpiar <directorio>` |
 | `info` | Muestra información del directorio | `fsort.py info <arg1>` |
 | `tamano` | Muestra el tamaño total de un directorio | `fsort.py tamano <arg1>` |
 | `ordenar` | Ordena archivos de un directorio en subcarpetas por extensión | `fsort.py ordenar <directorio>` |

@@ -402,6 +402,13 @@ def run_python_action(name: str, action: dict, args: list, dry_run: bool = False
         if len(args) > 1:
             kwargs["top"] = args[1]
         func(directory, **kwargs)
+    elif func is clean_temp:
+        if not args:
+            raise InvalidArgumentError(
+                f"'{name}': falta el directorio (fsort.py {name} <directorio>)")
+        directory = _checked_dir(args[0], name)
+        kwargs["assume_yes"] = (os.environ.get("FSORT_YES") == "1")
+        func(directory, **kwargs)
     else:
         directory = _checked_dir(args[0] if args else None, name)
         if func is flatten_dir:
@@ -1064,6 +1071,101 @@ def largest_files(directory: Path, top: int = 10, dry_run: bool = False,
             cprint(f"Completado: liberado {_human_size(total)}.")
     else:
         cprint(f"Tamaño total de los seleccionados: {_human_size(total)}.")
+
+
+# Patrones de basura reconocidos por 'limpiar' (nombre glob o sufijo si empieza por '*')
+TEMP_PATTERNS = (
+    "*.tmp", "*.temp", "*~", "*.bak", "*.old",
+    "*.swp", "*.swo", "*.swn",
+    "*.log",
+    ".DS_Store", "Thumbs.db", "desktop.ini",
+)
+
+
+def clean_temp(directory: Path, dry_run: bool = False, assume_yes: bool = False,
+               recursive: bool = True):
+    """
+    Mueve archivos temporales y de respaldo del directorio (recursivo por defecto)
+    a la papelera (FSORT_TRASH_DIR o ./trash, que se crea si falta).
+
+    Reconoce: .tmp .temp ~ .bak .old .swp .swo .swn .log y basura de sistema
+    (.DS_Store, Thumbs.db, desktop.ini). Pide confirmacion salvo --dry-run,
+    --yes/-y o FSORT_YES=1. Sin TTY no confirma: no mueve nada.
+    """
+    import fnmatch
+    if not directory.exists():
+        raise DirectoryNotFoundError(str(directory))
+    if not directory.is_dir():
+        raise NotADirectoryError_(str(directory))
+
+    trash = Path(os.environ.get("FSORT_TRASH_DIR", "trash")).expanduser()
+
+    def is_temp(p: Path) -> bool:
+        for pat in TEMP_PATTERNS:
+            if pat.startswith("*"):
+                if p.name.lower().endswith(pat[1:].lstrip("*")):
+                    return True
+            elif fnmatch.fnmatch(p.name.lower(), pat.lower()):
+                return True
+        return False
+
+    walker = directory.rglob("*") if recursive else directory.iterdir()
+    candidates = [p for p in walker if p.is_file() and is_temp(p)]
+
+    # No tocar la propia papelera si cuelga del directorio
+    try:
+        trash_res = trash.resolve()
+    except OSError:
+        trash_res = trash
+
+    def in_trash(p: Path) -> bool:
+        try:
+            p.resolve().relative_to(trash_res)
+            return True
+        except (ValueError, OSError):
+            return False
+
+    candidates = [p for p in candidates if not in_trash(p)]
+
+    if not candidates:
+        cprint(f"Nada que limpiar en {directory} (no hay archivos temporales).")
+        return
+
+    cprint(f"Se moverian a la papelera ({trash}) {len(candidates)} archivo(s):")
+    for p in sorted(candidates):
+        cprint(f"  {p}")
+    cprint()
+
+    if dry_run:
+        cprint(f"[DRY-RUN] {len(candidates)} archivo(s) se moverian a {trash}. "
+               "Usa sin --dry-run para aplicar.")
+        return
+
+    if not (assume_yes or os.environ.get("FSORT_YES") == "1"):
+        if not _confirm("Confirmar? [s/N] "):
+            cprint("Cancelado: no se ha movido nada.")
+            return
+    else:
+        cprint("  (--yes/FSORT_YES: confirmado automaticamente)")
+
+    trash.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for p in candidates:
+        dest = trash / p.name
+        if dest.exists():
+            counter = 1
+            original = dest
+            while dest.exists():
+                dest = original.with_name(f"{original.stem}_{counter}{original.suffix}")
+                counter += 1
+        try:
+            shutil.move(str(p), str(dest))
+            cprint(f"Movido: {p} -> {trash}/")
+            moved += 1
+        except Exception as e:
+            raise OperationError(f"{p}: {e}")
+
+    cprint(f"\nCompletado: {moved} archivo(s) movidos a {trash}.")
 
 
 def empty_trash(directory: Path = None, dry_run: bool = False,

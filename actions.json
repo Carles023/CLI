@@ -1,9 +1,10 @@
 {
   "actions": {
     "limpiar": {
-      "description": "Mueve archivos temporales (.tmp, .bak) del directorio {1} a la papelera (FSORT_TRASH_DIR o ./trash, que se crea si falta)",
-      "type": "command",
-      "command": "sh -c 'd=$1; [ -d \"$d\" ] || { echo \"Error: el directorio no existe: $d\" >&2; exit 1; }; t=${FSORT_TRASH_DIR:-./trash}; files=$(find \"$d\" -maxdepth 1 -type f \\( -name \"*.tmp\" -o -name \"*.bak\" \\)); if [ -z \"$files\" ]; then echo \"Nada que limpiar en $d (no hay .tmp ni .bak)\"; exit 0; fi; echo \"Se moveran a la papelera ($t) los archivos:\"; echo \"$files\" | sed \"s|^|  |\"; if [ -t 0 ]; then read -r -p \"Confirmar? [s/N] \" ans </dev/tty || ans=n; else echo \"(sin TTY: no se puede confirmar; omitido. Usa un terminal o --dry-run)\"; ans=n; fi; case \"$ans\" in [sS]*) mkdir -p \"$t\"; n=$(echo \"$files\" | wc -l); echo \"$files\" | xargs -d \"\\n\" mv -f -t \"$t\"; echo \"Limpiado: $n archivo(s) movidos a $t\";; *) echo \"Cancelado: no se ha movido nada.\";; esac' _ {1}"
+      "description": "Mueve archivos temporales y de respaldo (.tmp, .temp, .bak, .old, ~, .swp, .log, basura de sistema) del directorio {1} a la papelera (FSORT_TRASH_DIR o ./trash). Recursivo. Pide confirmacion salvo --yes",
+      "type": "python",
+      "func": "clean_temp",
+      "kwargs": {}
     },
     "info": {
       "description": "Muestra información del directorio",
