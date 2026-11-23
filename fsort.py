@@ -31,7 +31,6 @@ from errores import (
     DestinationNotFoundError,
     DirectoryNotFoundError,
     FileReadError,
-    FileTooLargeError,
     FsortError,
     InvalidActionError,
     InvalidArgumentError,
@@ -891,6 +890,9 @@ def summarize_file(file_path: Path, output: Path = None,
 
     truncated = False
     if len(text) > limit:
+        cprint(f"Aviso: el documento tiene {len(text):,} caracteres y supera el limite "
+               f"de {limit:,} (FSORT_SUMMARY_MAX_CHARS); se resumira solo el inicio. "
+               "Sube el limite o reduce el archivo para un resumen completo.")
         text = text[:limit]
         truncated = True
 

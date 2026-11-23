@@ -127,12 +127,6 @@ class UnsupportedFileFormatError(FsortError):
     message = "Formato de archivo no compatible"
 
 
-class FileTooLargeError(FsortError):
-    """El archivo es demasiado grande para enviarlo a la IA."""
-
-    message = "El archivo es demasiado grande"
-
-
 class FileReadError(FsortError):
     """No se pudo leer el contenido del archivo indicado."""
 
