@@ -8,14 +8,13 @@ Una herramienta CLI simple para organizar automáticamente tus archivos en carpe
 - Soporta modo simulación (`--dry-run`) para previsualizar cambios
 - Vacía subcarpetas y mueve sus archivos a otro directorio
 - Mueve o copia archivos y carpetas concretos a otro directorio
-- Convierte PDF a ODT
 - Todos los comandos se definen fuera del código en `actions.json`
 
 ## Comandos disponibles (actions.json)
 
 | Comando | Descripción | Uso |
 | --- | --- | --- |
-| `limpiar` | Mueve archivos temporales y backups a la papelera (ejemplo) | `fsort.py limpiar <arg1>` |
+| `limpiar` | Mueve archivos temporales (.tmp, .bak) del directorio {1} a la papelera (FSORT_TRASH_DIR o ./trash, que se crea si falta) | `fsort.py limpiar <arg1>` |
 | `info` | Muestra información del directorio | `fsort.py info <arg1>` |
 | `tamano` | Muestra el tamaño total de un directorio | `fsort.py tamano <arg1>` |
 | `ordenar` | Ordena archivos de un directorio en subcarpetas por extensión | `fsort.py ordenar <directorio>` |
