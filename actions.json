@@ -1,9 +1,9 @@
 {
   "actions": {
     "limpiar": {
-      "description": "Mueve archivos temporales y backups a la papelera (ejemplo)",
+      "description": "Mueve archivos temporales (.tmp, .bak) del directorio {1} a la papelera (FSORT_TRASH_DIR o ./trash, que se crea si falta)",
       "type": "command",
-      "command": "mv {1}/*.tmp {1}/*.bak trash/"
+      "command": "sh -c 'd=$1; [ -d \"$d\" ] || { echo \"Error: el directorio no existe: $d\" >&2; exit 1; }; t=${FSORT_TRASH_DIR:-./trash}; mkdir -p \"$t\"; n=$(find \"$d\" -maxdepth 1 -type f \\( -name \"*.tmp\" -o -name \"*.bak\" \\) -print -exec mv -f -t \"$t\" {} + 2>/dev/null | wc -l); if [ \"$n\" -eq 0 ]; then echo \"Nada que limpiar en $d (no hay .tmp ni .bak)\"; else echo \"Limpiado: $n archivo(s) movidos a $t\"; fi' _ {1}"
     },
     "info": {
       "description": "Muestra información del directorio",
