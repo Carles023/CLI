@@ -1209,7 +1209,7 @@ def _extract_assistant(argv: list):
     rest = []
     i = 0
     flags = ("--ai", "--ia", "--pregunta", "--pregunta-ia", "-P")
-    prefixes = ("--ai=", "--ia=", "--pregunta=", "--pregunta-ia=")
+    prefixes = ("--ai=", "--ia=", "--pregunta=", "--pregunta-ia=", "-P=")
     while i < len(argv):
         a = argv[i]
         if a in flags:
@@ -1348,10 +1348,10 @@ Ejemplos:
     parser.add_argument("--yes", "-y", action="store_true",
                         help="No pedir confirmacion en acciones destructivas "
                              "(equivale a FSORT_YES=1)")
-    parser.add_argument("--ai", "--ia", "--pregunta", metavar="TEXTO",
+    parser.add_argument("--ai", "--ia", "--pregunta", "-P", metavar="TEXTO",
                         nargs="?", const="", default=None,
                         help="Pregunta a la IA de Simarro y muestra la respuesta "
-                             "(requiere FSORT_AI_KEY)")
+                             "(requiere FSORT_AI_KEY; alias: -P/--ia/--pregunta)")
 
     args, extra = parser.parse_known_args(rest_argv)
 
