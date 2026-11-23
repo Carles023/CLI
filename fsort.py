@@ -124,7 +124,7 @@ def run_action(name: str, action: dict, args: list, dry_run: bool = False):
 
     if dry_run:
         print(f"[DRY-RUN] Ejecutaría: {command}")
-        _dry_run_command(command)
+        _dry_run_command(command, name=name, action_args=args)
         return
 
     argv = shlex.split(command) if os.name != "nt" else command
@@ -170,12 +170,31 @@ destructive_commands = ("mv", "rm", "cp", "mkdir", "rmdir", "touch", "truncate",
 
 
 
-def _dry_run_command(command: str):
+def _dry_run_command(command: str, name: str = "", action_args: list = None):
     """Simula un comando 'type: command' listando lo que tocaría, sin ejecutar nada.
 
+    Para la acción 'limpiar' previsualiza los archivos temporales que se moverían.
     Analiza pipes, '&&' o ';' y muestra los ficheros reales que afectan los
     comandos destructivos (mv, rm, cp, ...) sin alterarlos.
     """
+    # Previsualización específica de 'limpiar': lista .tmp/.bak del directorio {1}
+    if name == "limpiar" and action_args:
+        directory = Path(action_args[0]).expanduser()
+        trash = os.environ.get("FSORT_TRASH_DIR", "./trash")
+        if not directory.is_dir():
+            print(f"  [DRY-RUN] el directorio no existe: {directory}")
+            return
+        matches = sorted(
+            [f for f in directory.glob("*") if f.is_file() and f.suffix in (".tmp", ".bak")])
+        if not matches:
+            print(f"  [DRY-RUN] nada que limpiar en {directory} (no hay .tmp ni .bak)")
+        else:
+            print(f"  [DRY-RUN] movería a la papelera ({trash}):")
+            for f in matches:
+                print(f"    - {f}")
+            print(f"  [DRY-RUN] pediría confirmación interactiva antes de mover.")
+        return
+
     try:
         segments = shlex.split(command)
     except ValueError:
