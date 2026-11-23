@@ -961,10 +961,16 @@ def empty_trash(directory: Path = None, dry_run: bool = False,
         raise NotADirectoryError_(str(trash))
 
     # Contenido de primer nivel (no la carpeta raíz de la papelera)
-    entries = [p for p in trash.iterdir() if _match_name(p.name, ext)]
+    all_entries = list(trash.iterdir())
+    entries = [p for p in all_entries if _match_name(p.name, ext)]
+    skipped_by_ext = [p for p in all_entries if not _match_name(p.name, ext)]
 
     if not entries:
-        print(f"La papelera ({trash}) ya está vacía.")
+        if skipped_by_ext:
+            print(f"La papelera ({trash}) no está vacía, pero ningún elemento coincide "
+                  f"con el filtro '{ext}' ({len(skipped_by_ext)} dentro).")
+        else:
+            print(f"La papelera ({trash}) ya está vacía.")
         return
 
     sized = [(_dir_size(p), p) for p in entries]
@@ -975,8 +981,13 @@ def empty_trash(directory: Path = None, dry_run: bool = False,
     except (TypeError, ValueError):
         raise InvalidArgumentError(f"el número de archivos debe ser un entero, no '{top}'")
 
+    # Que se queda fuera de esta pasada (para no afirmar 'vaciada' en falso)
     if top > 0:
+        skipped = [p for _, p in sized[top:]]
         sized = sized[:top]
+    else:
+        skipped = []
+    skipped += skipped_by_ext
 
     do_delete = delete
 
@@ -1011,14 +1022,34 @@ def empty_trash(directory: Path = None, dry_run: bool = False,
             count += 1
 
     print()
+    # ¿Queda algo dentro tras la pasada? (no afirmar 'vaciada' en falso con filtros/top)
+    if do_delete and dry_run:
+        remaining_count = len(skipped)          # no se ha borrado nada realmente
+    elif do_delete:
+        try:
+            remaining_count = sum(1 for _ in trash.iterdir())
+        except OSError:
+            remaining_count = 0
+    else:
+        remaining_count = len(skipped)
+
     if not do_delete:
-        print(f"{count} elemento(s). Total: {_human_size(freed)}. "
+        total_all = sum(_dir_size(p) for p in all_entries)
+        print(f"{count} elemento(s) listados. Total papelera: {_human_size(total_all)}. "
               "Usa 'vaciar-papelera-ya' para eliminar el contenido.")
     elif dry_run:
-        print(f"[DRY-RUN] {count} elemento(s). Se liberarían {_human_size(freed)}. "
-              "Usa sin --dry-run para vaciar la papelera.")
+        base = f"[DRY-RUN] {count} elemento(s). Se liberarían {_human_size(freed)}."
+        base += (f" Quedarían {remaining_count} elemento(s) sin tocar "
+                 "(filtrados por 'ext' o fuera del top)." if remaining_count
+                 else " La papelera quedaría vacía.")
+        print(base + " Usa sin --dry-run para vaciar la papelera.")
     else:
-        print(f"Papelera vaciada: {count} elemento(s) eliminados. Liberado: {_human_size(freed)}.")
+        if remaining_count:
+            print(f"Papelera NO vaciada por completo: {count} elemento(s) eliminados "
+                  f"(liberado {_human_size(freed)}); quedan {remaining_count} dentro "
+                  "(filtrados o fuera del top). Repite sin filtros para vaciar del todo.")
+        else:
+            print(f"Papelera vaciada: {count} elemento(s) eliminados. Liberado: {_human_size(freed)}.")
 
 
 def _extract_actions_file(argv: list):
