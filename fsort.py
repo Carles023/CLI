@@ -20,7 +20,6 @@ from config import (
     SUMMARY_MAX_CHARS,
     SUMMARY_SYSTEM_PROMPT,
     ActionsValidationError,
-    check_actions,
     load_and_validate,
 )
 from errores import (
@@ -1407,14 +1406,9 @@ def _print_error(exc: FsortError):
 
 
 def dispatch(args, extra: list, actions: dict):
-    errors = check_actions(actions)
-    if errors:
-        cprint(f"✗ Error: acciones no válidas ({len(errors)}):")
-        for err in errors:
-            cprint(f"  - {err}")
-        cprint("\nCorrige el archivo de acciones y vuelve a intentarlo.")
-        raise SystemExit(1)
-
+    # Las acciones ya se validaron (estructura, marcadores y funciones) al cargar el
+    # JSON en main()/load_actions(); no hace falta revalidar aqui (evita re-importar
+    # fsort.py por cada accion, que era el coste de la doble validacion).
     if args.actions:
         if not actions:
             cprint("No hay acciones definidas en actions.json.")
