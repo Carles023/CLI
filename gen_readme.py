@@ -41,7 +41,41 @@ def build_table(actions: dict) -> str:
     return "\n".join(rows)
 
 
+def _ai_defaults_match_code() -> list:
+    """Comprueba que AI_ENV_VARS coincide con los defaults reales de fsort.py.
+
+    Devuelve la lista de discrepancias (vacia si todo cuadra). Evita que el
+    README documente defaults que ya no son los del codigo.
+    """
+    from config import AI_ENV_VARS
+    mismatches = []
+    try:
+        import fsort
+        cfg = fsort._ai_config()
+        # CA por defecto (fsort._ssl_context)
+        expected = {
+            "FSORT_AI_URL": f"`{cfg['base_url']}`",
+            "FSORT_AI_MODEL": f"`{cfg['model']}`",
+            "FSORT_AI_KEY": "—",
+        }
+        for var, _desc, default in AI_ENV_VARS:
+            if var in expected and default != expected[var]:
+                mismatches.append(
+                    f"{var}: README dice '{default}' pero fsort usa '{expected[var]}'")
+    except ImportError:
+        mismatches.append("no se pudo importar fsort para verificar defaults")
+    return mismatches
+
+
 def main() -> int:
+    mismatches = _ai_defaults_match_code()
+    if mismatches:
+        print("Error: los defaults IA del README no coinciden con el codigo:")
+        for m in mismatches:
+            print(f"  - {m}")
+        print("Actualiza AI_ENV_VARS en config.py.")
+        return 1
+
     try:
         with open(ACTIONS_FILE, encoding="utf-8") as f:
             actions = json.load(f).get("actions", {})
@@ -75,31 +109,42 @@ def main() -> int:
     return 0
 
 
+def _ai_table() -> str:
+    """Construye la tabla de variables IA desde AI_ENV_VARS (unica fuente de verdad
+    en config.py), para no duplicar defaults en dos sitios y desincronizarlos."""
+    from config import AI_ENV_VARS
+    rows = [
+        "| Variable | Descripción | Por defecto |",
+        "| --- | --- | --- |",
+    ]
+    for var, desc, default in AI_ENV_VARS:
+        rows.append(f"| `{var}` | {desc} | {default} |")
+    return "\n".join(rows)
+
+
+def _ai_section() -> str:
+    return (
+        "## IA de Simarro\n\n"
+        "Configuración por variables de entorno:\n\n"
+        + _ai_table() + "\n\n"
+        "```bash\n"
+        "export FSORT_AI_KEY='sk-...'\n"
+        'python3 fsort.py --ai "¿Cómo busco duplicados en ~/Descargas?"\n'
+        'python3 fsort.py ai "¿Qué comando uso para vaciar subcarpetas?"\n'
+        "```\n\n"
+        "La IA responde en el idioma de la pregunta y propone comandos `fsort.py` reales.\n\n"
+    )
+
+
 def _ensure_ai_section(readme: str) -> str:
-    """Garantiza que el README documente el modo IA y sus variables de entorno."""
+    """Garantiza que el README documente el modo IA y sus variables de entorno.
+
+    No duplica los valores por defecto: los genera desde config.AI_ENV_VARS,
+    de modo que cambiar el default en config/fsort se refleje al regenerar.
+    """
     if "## IA de Simarro" in readme:
         return readme
-    section = """## IA de Simarro
-
-Configuración por variables de entorno:
-
-| Variable | Descripción | Por defecto |
-| --- | --- | --- |
-| `FSORT_AI_KEY` | Clave de API (obligatoria) | — |
-| `FSORT_AI_URL` | URL base de la API compatible con OpenAI | `https://ia.simarro/llmapi/v1` |
-| `FSORT_AI_MODEL` | Modelo a usar | `Qwen38-DualSpark-medium` |
-| `FSORT_AI_CA` | Ruta al certificado CA de Simarro | `~/.config/opencode/ca-simarro.crt` |
-| `FSORT_AI_INSECURE` | `1` para desactivar la verificación TLS | desactivado |
-
-```bash
-export FSORT_AI_KEY='sk-...'
-python3 fsort.py --ai "¿Cómo busco duplicados en ~/Descargas?"
-python3 fsort.py ai "¿Qué comando uso para vaciar subcarpetas?"
-```
-
-La IA responde en el idioma de la pregunta y propone comandos `fsort.py` reales.
-
-"""
+    section = _ai_section()
     marker = "## Errores"
     if marker in readme:
         return readme.replace(marker, section + marker, 1)

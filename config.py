@@ -45,6 +45,20 @@ SUMMARY_SYSTEM_PROMPT = (
 
 SUMMARY_MAX_CHARS = int(os.environ.get("FSORT_SUMMARY_MAX_CHARS", "12000"))
 
+# Unica fuente de verdad para documentar las variables de entorno de la IA.
+# Estos valores DEBEN coincidir con los defaults usados en fsort._ai_config() y
+# fsort._ssl_context(); gen_readme.py los usa para generar la tabla del README,
+# evitando duplicar defaults en dos sitios (riesgo de desincronizacion).
+AI_ENV_VARS = [
+    ["FSORT_AI_KEY", "Clave de API (obligatoria)", "—"],
+    ["FSORT_AI_URL", "URL base de la API compatible con OpenAI",
+     "`https://ia.simarro/llmapi/v1`"],
+    ["FSORT_AI_MODEL", "Modelo a usar", "`Qwen38-DualSpark-medium`"],
+    ["FSORT_AI_CA", "Ruta al certificado CA de Simarro",
+     "`~/.config/opencode/ca-simarro.crt`"],
+    ["FSORT_AI_INSECURE", "`1` para desactivar la verificación TLS", "desactivado"],
+]
+
 
 from errores import (
     ActionsFileInvalidError,
