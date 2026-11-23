@@ -1146,6 +1146,11 @@ def ai_assistant(question: str):
     print()
 
 
+def _is_dry(args, extra: list) -> bool:
+    """Detecta el modo simulación en cualquier posición (argparse o extra)."""
+    return bool(getattr(args, "dry_run", False)) or "-d" in extra or "--dry-run" in extra
+
+
 def main():
     pre_ai, rest_argv = _extract_assistant(sys.argv[1:])
     actions_file, rest_argv = _extract_actions_file(rest_argv)
@@ -1195,7 +1200,7 @@ Ejemplos:
     # Combinar --ai/--ia/--pregunta: puede venir de argparse o del preprocesador.
     question = args.ai if args.ai is not None else pre_ai
     if question is not None:
-        if args.dry_run:
+        if _is_dry(args, extra):
             print(f"[DRY-RUN] Consultaría la IA de Simarro con la pregunta: "
                   f"'{question.strip() or '(interactiva)'}'")
             return
@@ -1268,7 +1273,7 @@ def dispatch(args, extra: list, actions: dict):
               f"Comandos disponibles: {disponible}.")
         raise SystemExit(1)
 
-    dry_run = args.dry_run or "-d" in extra
+    dry_run = _is_dry(args, extra)
     if dry_run and "-d" in extra:
         action_args.remove("-d")
 
