@@ -455,14 +455,24 @@ def sort_files(directory: Path, dry_run: bool = False, copy: bool = False, recur
             # Quitar el punto y usarlo como nombre de carpeta
             ext_folder = extension[1:]  # ej: .txt -> txt
         
-        # Crear carpeta destino
-        dest_folder = directory / ext_folder if not recursive else file_path.parent / ext_folder
+        # Crear carpeta destino: en modo recursivo se consolida todo en <raiz>/<ext>/
+        dest_folder = directory / ext_folder
         dest_file = dest_folder / file_path.name
         
-        # Evitar mover archivos que ya están en la carpeta correcta
+        # Evitar mover un archivo que ya esta en su carpeta de extension destino
         if file_path.parent == dest_folder:
             continue
-        
+
+        # En recursivo, saltar archivos que ya cuelgan de <raiz>/<ext>/ (ya consolidados
+        # en una pasada anterior o de un 'ordenar' previo): evita re-mover y bucles.
+        if recursive:
+            try:
+                file_path.relative_to(dest_folder)
+                continue
+            except ValueError:
+                pass
+
+
         if dry_run:
             action = "Copiaría" if copy else "Movería"
             cprint(f"[DRY-RUN] {action}: {file_path} -> {dest_file}")
