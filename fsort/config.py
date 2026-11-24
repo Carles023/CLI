@@ -27,6 +27,7 @@ AI_SYSTEM_PROMPT = (
     "  resumir <archivo> [destino.txt]\n"
     "  info <dir>, tamano <dir>, limpiar <dir>\n"
     "  reporte <dir> [N]  (resumen: tamaño, extensiones, duplicados, temporales)\n"
+    "  deshacer-limpieza  (devuelve los archivos de la última 'limpiar')\n"
     "Opciones globales: --dry-run (-d) para simular, --actions para listar comandos,\n"
     "  --ai \"pregunta\" para consultar la IA.\n"
     "Responde SIEMPRE en el mismo idioma que la pregunta del usuario "

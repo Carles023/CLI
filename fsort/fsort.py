@@ -403,6 +403,10 @@ def run_python_action(name: str, action: dict, args: list, dry_run: bool = False
         if len(args) > 1:
             kwargs["top"] = args[1]
         func(directory, **kwargs)
+    elif func is undo_clean:
+        trash_arg = Path(args[0]).expanduser() if args else None
+        kwargs["assume_yes"] = (os.environ.get("FSORT_YES") == "1")
+        func(trash_arg, **kwargs)
     elif func is clean_temp:
         if not args:
             raise InvalidArgumentError(
@@ -1107,6 +1111,126 @@ TEMP_PATTERNS = (
 )
 
 
+def _log_path() -> Path:
+    """Ruta del log de operaciones de 'limpiar' (JSONL, una línea por archivo)."""
+    if os.environ.get("FSORT_LOG_FILE"):
+        return Path(os.environ["FSORT_LOG_FILE"]).expanduser()
+    return Path.home() / ".fsort" / "clean_log.jsonl"
+
+
+def _append_move_log(entries: list):
+    """Registra (origen, destino) de cada movido por 'limpiar' para poder deshacer."""
+    log = _log_path()
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, "a", encoding="utf-8") as f:
+            for src, dst in entries:
+                rec = {"src": str(src), "dst": str(dst)}
+                f.write(jsonlib.dumps(rec, ensure_ascii=False) + "\n")
+    except OSError:
+        cprint("  Aviso: no se pudo escribir el log de limpieza; 'deshacer-limpieza' no recuperará estos archivos.")
+
+
+def undo_clean(trash: Path = None, dry_run: bool = False, assume_yes: bool = False):
+    """
+    Deshace la última limpieza ('limpiar'): devuelve de la papelera al origen
+    los archivos movidos, en orden inverso. Quita del log las entradas restauradas.
+    Con FSORT_TRASH_DIR / papelera movida manualmente, usa el 'dst' registrado.
+    """
+    log = _log_path()
+    if not log.exists():
+        cprint("No hay registros de limpieza que deshacer.")
+        return
+
+    try:
+        with open(log, encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError as e:
+        raise FileReadError(f"{log}: {e}")
+
+    entries = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = jsonlib.loads(line)
+            entries.append((Path(rec["src"]), Path(rec["dst"])))
+        except (ValueError, TypeError, KeyError):
+            entries.append(None)
+
+    # Última limpieza = bloque contiguo final con src y dst comunes
+    def base_of(p: Path) -> Path:
+        return p.parent
+
+    i = len(entries)
+    while i > 0 and entries[i - 1] is None:
+        i -= 1
+    if i == 0:
+        cprint("No hay registros de limpieza que deshacer.")
+        return
+    batch = [entries[i - 1]]
+    batch_src = base_of(entries[i - 1][0])
+    j = i - 1
+    while j > 0 and entries[j - 1] is not None and base_of(entries[j - 1][0]) == batch_src:
+        batch.append(entries[j - 1])
+        j -= 1
+    batch.reverse()
+    keep = entries[:j]
+    restore_to = batch_src
+    trash_dir = base_of(batch[-1][1])
+
+    disponibles = [(src, dst) for src, dst in batch if dst.exists()]
+    perdidos = [(src, dst) for src, dst in batch if not dst.exists()]
+
+    cprint(f"Última limpieza deshecha: {len(disponibles)} archivo(s) de "
+          f"{restore_to} (papelera: {trash_dir})")
+    for src, _ in perdidos:
+        cprint(f"  Aviso: ya no está en la papelera, no se puede recuperar: {src}")
+    if not disponibles:
+        return
+
+    if dry_run:
+        for src, dst in disponibles:
+            cprint(f"  [DRY-RUN] Restauraría: {dst} -> {src}")
+        cprint("[DRY-RUN] Nada restaurado. Usa sin --dry-run para deshacer.")
+        return
+
+    if not (assume_yes or os.environ.get("FSORT_YES") == "1"):
+        if not _confirm("¿Deshacer la última limpieza? [s/N] "):
+            cprint("Cancelado: no se ha restaurado nada.")
+            return
+    else:
+        cprint("  (--yes/FSORT_YES: confirmado automaticamente)")
+
+    restored = 0
+    for src, dst in reversed(disponibles):
+        try:
+            src.parent.mkdir(parents=True, exist_ok=True)
+            final = src
+            counter = 1
+            while final.exists():
+                final = src.with_name(f"{src.stem}_{counter}{src.suffix}")
+                counter += 1
+            shutil.move(str(dst), str(final))
+            cprint(f"  Restaurado: {dst.name} -> {final}")
+            restored += 1
+        except Exception as e:
+            cprint(f"  Error al restaurar {dst}: {e}")
+
+    # Reescribir el log sin las entradas restauradas
+    try:
+        with open(log, "w", encoding="utf-8") as f:
+            for e in keep:
+                if e is not None:
+                    f.write(jsonlib.dumps({"src": str(e[0]), "dst": str(e[1])},
+                                          ensure_ascii=False) + "\n")
+    except OSError as e:
+        cprint(f"  Aviso: entradas restauradas pero el log no se pudo actualizar: {e}")
+
+    cprint(f"\nCompletado: {restored} archivo(s) restaurados en {restore_to}.")
+
+
 def clean_temp(directory: Path, dry_run: bool = False, assume_yes: bool = False,
                recursive: bool = True):
     """
@@ -1175,6 +1299,7 @@ def clean_temp(directory: Path, dry_run: bool = False, assume_yes: bool = False,
 
     trash.mkdir(parents=True, exist_ok=True)
     moved = 0
+    logged = []
     for p in candidates:
         dest = trash / p.name
         if dest.exists():
@@ -1186,9 +1311,13 @@ def clean_temp(directory: Path, dry_run: bool = False, assume_yes: bool = False,
         try:
             shutil.move(str(p), str(dest))
             cprint(f"Movido: {p} -> {trash}/")
+            logged.append((str(p), str(dest)))
             moved += 1
         except Exception as e:
             raise OperationError(f"{p}: {e}")
+
+    if logged:
+        _append_move_log(logged)
 
     cprint(f"\nCompletado: {moved} archivo(s) movidos a {trash}.")
 
@@ -1663,6 +1792,8 @@ def dispatch(args, extra: list, actions: dict):
             example = f"fsort.py {command} [papelera]"
         elif action.get("func") == "summarize_file":
             example = f"fsort.py {command} <archivo> [destino.txt]"
+        elif action.get("func") == "undo_clean":
+            example = f"fsort.py {command} [--dry-run | --yes]"
         else:
             example = f"fsort.py {command} <directorio>"
     elif action_type == "command":

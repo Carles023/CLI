@@ -6,6 +6,12 @@
       "func": "clean_temp",
       "kwargs": {}
     },
+    "deshacer-limpieza": {
+      "description": "Devuelve a su carpeta original los archivos que movió la última 'limpiar' (log en ~/.fsort/clean_log.jsonl). Pide confirmacion salvo --yes; usa --dry-run para ver qué restauraría",
+      "type": "python",
+      "func": "undo_clean",
+      "kwargs": {}
+    },
     "info": {
       "description": "Muestra información del directorio",
       "type": "command",

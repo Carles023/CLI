@@ -306,3 +306,92 @@ def test_reporte_comando_real(tmp_path):
     from fsort import config
     actions = config.load_and_validate()
     assert actions["reporte"]["func"] == "dir_report"
+
+
+# --- deshacer-limpieza --------------------------------------------------------
+
+def _limpiar(tmp_path, monkeypatch, trash=None):
+    trash = trash or tmp_path / "trash"
+    log = tmp_path / "log.jsonl"
+    monkeypatch.setenv("FSORT_TRASH_DIR", str(trash))
+    monkeypatch.setenv("FSORT_LOG_FILE", str(log))
+    monkeypatch.setenv("FSORT_YES", "1")
+    fsort.clean_temp(tmp_path)
+    return trash, log
+
+
+def test_undo_deshace_ultima_limpiar(tmp_path, monkeypatch):
+    _poblado(tmp_path)
+    trash, log = _limpiar(tmp_path, monkeypatch)
+    assert not (tmp_path / "c.tmp").exists()
+    fsort.undo_clean(assume_yes=True)
+    assert (tmp_path / "c.tmp").exists()
+    assert not (trash / "c.tmp").exists()
+    assert log.read_text(encoding="utf-8") == ""
+
+
+def test_undo_dry_run_no_restaura(tmp_path, monkeypatch, capsys):
+    _poblado(tmp_path)
+    _limpiar(tmp_path, monkeypatch)
+    fsort.undo_clean(dry_run=True)
+    assert "[DRY-RUN]" in capsys.readouterr().out
+    assert not (tmp_path / "c.tmp").exists()
+
+
+def test_undo_sin_log(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("FSORT_LOG_FILE", str(tmp_path / "nodir" / "l.jsonl"))
+    fsort.undo_clean()
+    assert "No hay registros" in capsys.readouterr().out
+
+
+def test_undo_papelera_vaciada_no_rompe(tmp_path, monkeypatch, capsys):
+    _poblado(tmp_path)
+    trash, log = _limpiar(tmp_path, monkeypatch)
+    fsort.empty_trash(directory=trash, delete=True)
+    fsort.undo_clean(assume_yes=True)
+    out = capsys.readouterr().out
+    assert "no se puede recuperar" in out
+    assert log.read_text(encoding="utf-8").strip()  # entrada conservada
+
+
+def test_undo_colision_no_sobrescribe(tmp_path, monkeypatch):
+    _poblado(tmp_path)
+    _limpiar(tmp_path, monkeypatch)
+    (tmp_path / "c.tmp").write_text("nuevo")
+    fsort.undo_clean(assume_yes=True)
+    assert (tmp_path / "c.tmp").read_text(encoding="utf-8") == "nuevo"
+    assert (tmp_path / "c_1.tmp").exists()
+
+
+def test_undo_sin_tty_no_restaura(tmp_path, monkeypatch, no_tty):
+    _poblado(tmp_path)
+    _limpiar(tmp_path, monkeypatch)
+    monkeypatch.delenv("FSORT_YES")
+    fsort.undo_clean()
+    assert not (tmp_path / "c.tmp").exists()
+
+
+def test_undo_dos_limpiezas(tmp_path, monkeypatch):
+    _poblado(tmp_path)
+    trash, log = _limpiar(tmp_path, monkeypatch)
+    d2 = tmp_path / "d2"
+    d2.mkdir()
+    (d2 / "d.tmp").write_text("d")
+    monkeypatch.setenv("FSORT_TRASH_DIR", str(trash))
+    fsort.clean_temp(d2)
+    fsort.undo_clean(assume_yes=True)
+    assert (d2 / "d.tmp").exists()          # solo la última
+    assert not (tmp_path / "c.tmp").exists()
+    assert log.read_text(encoding="utf-8").strip()  # queda la primera limpieza
+
+
+def test_clean_temp_si_registra_log(tmp_path, monkeypatch):
+    _poblado(tmp_path)
+    trash, log = _limpiar(tmp_path, monkeypatch)
+    assert "c.tmp" in log.read_text(encoding="utf-8")
+
+
+def test_accio_deshacer_registered():
+    from fsort import config
+    actions = config.load_and_validate()
+    assert actions["deshacer-limpieza"]["func"] == "undo_clean"

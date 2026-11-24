@@ -37,6 +37,8 @@ def build_table(actions: dict) -> str:
             usage += " <directorio> [top]"
         elif name.startswith("vaciar-papelera"):
             usage += " [papelera]"
+        elif action.get("func") == "undo_clean":
+            usage += "  # sin argumentos (--dry-run / --yes)"
         elif name == "resumir":
             usage += " <archivo> [destino.txt]"
         elif action.get("type") == "ai":
