@@ -1294,6 +1294,11 @@ def clean_temp(directory: Path, dry_run: bool = False, assume_yes: bool = False,
         if not _confirm("Confirmar? [s/N] "):
             cprint("Cancelado: no se ha movido nada.")
             return
+    elif assume_yes and not os.environ.get("FSORT_YES") and not sys.stdin.isatty():
+        # 'assume_yes' via kwargs (limpiar-auto) en entorno sin TTY: no mueve nada
+        # a traicion. Para automatizaciones sin TTY, usa FSORT_YES=1 (o --yes).
+        cprint("  (sin TTY: 'limpiar-auto' no actua sin FSORT_YES=1 ni --yes; cancelado)")
+        return
     else:
         cprint("  (--yes/FSORT_YES: confirmado automaticamente)")
 

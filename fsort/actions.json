@@ -12,6 +12,12 @@
       "func": "undo_clean",
       "kwargs": {}
     },
+    "limpiar-auto": {
+      "description": "Como 'limpiar' pero sin pedir confirmacion (pensa per a scripts i cron). Mueve los temporales a la papelera; usa --dry-run antes de lanzarlo en automatizaciones. Puedes deshacerlo con 'deshacer-limpieza'",
+      "type": "python",
+      "func": "clean_temp",
+      "kwargs": {"assume_yes": true}
+    },
     "info": {
       "description": "Muestra información del directorio",
       "type": "command",

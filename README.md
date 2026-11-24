@@ -33,6 +33,7 @@ tests/                   # pytest (lógica, CLI, imports, errores)
 | --- | --- | --- |
 | `limpiar` | Mueve archivos temporales y de respaldo (.tmp, .temp, .bak, .old, ~, .swp, .log, basura de sistema) del directorio {1} a la papelera (FSORT_TRASH_DIR o ./trash). Recursivo. Pide confirmacion salvo --yes | `fsort.py limpiar <directorio>` |
 | `deshacer-limpieza` | Devuelve a su carpeta original los archivos que movió la última 'limpiar' (log en ~/.fsort/clean_log.jsonl). Pide confirmacion salvo --yes; usa --dry-run para ver qué restauraría | `fsort.py deshacer-limpieza  # sin argumentos (--dry-run / --yes)` |
+| `limpiar-auto` | Como 'limpiar' pero sin pedir confirmacion (pensa per a scripts i cron). Mueve los temporales a la papelera; usa --dry-run antes de lanzarlo en automatizaciones. Puedes deshacerlo con 'deshacer-limpieza' | `fsort.py limpiar-auto <directorio>` |
 | `info` | Muestra información del directorio | `fsort.py info <arg1>` |
 | `tamano` | Muestra el tamaño total de un directorio | `fsort.py tamano <arg1>` |
 | `ordenar` | Ordena archivos de un directorio en subcarpetas por extensión | `fsort.py ordenar <directorio>` |
@@ -68,6 +69,7 @@ fsort ordenar ~/Descargas
 python3 fsort.py ordenar ~/Descargas
 python3 fsort.py info ~/Documentos
 python3 fsort.py reporte ~/Descargas
+FSORT_YES=1 python3 fsort.py limpiar-auto ~/Descargas   # en cron/scripts (sin preguntar)
 python3 fsort.py mover foto.jpg docs ~/Todos
 
 # Listar los comandos disponibles

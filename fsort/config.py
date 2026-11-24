@@ -25,7 +25,7 @@ AI_SYSTEM_PROMPT = (
     "  mas-grandes <dir> [N], mas-grandes-eliminar <dir> [N]\n"
     "  vaciar-papelera [papelera], vaciar-papelera-ya [papelera]\n"
     "  resumir <archivo> [destino.txt]\n"
-    "  info <dir>, tamano <dir>, limpiar <dir>\n"
+    "  info <dir>, tamano <dir>, limpiar <dir>, limpiar-auto <dir>\n"
     "  reporte <dir> [N]  (resumen: tamaño, extensiones, duplicados, temporales)\n"
     "  deshacer-limpieza  (devuelve los archivos de la última 'limpiar')\n"
     "Opciones globales: --dry-run (-d) para simular, --actions para listar comandos,\n"

@@ -1,9 +1,10 @@
 """Tests de la logica de archivos de fsort (ordenar, vaciar, mover, duplicados, papelera)."""
+import sys
 from pathlib import Path
 
 import pytest
 
-from fsort import fsort
+from fsort import config, fsort
 from fsort.errores import (
     DestinationNotFoundError,
     DirectoryNotFoundError,
@@ -395,3 +396,47 @@ def test_accio_deshacer_registered():
     from fsort import config
     actions = config.load_and_validate()
     assert actions["deshacer-limpieza"]["func"] == "undo_clean"
+
+
+# --- limpiar-auto (kwargs assume_yes) ----------------------------------------
+
+def test_limpiar_auto_sin_tty_no_mueve(tmp_path, monkeypatch, capsys):
+    """assume_yes via kwargs NO debe saltarse la proteccion de sin-TTY."""
+    monkeypatch.setenv("FSORT_TRASH_DIR", str(tmp_path / "trash"))
+    monkeypatch.setenv("FSORT_LOG_FILE", str(tmp_path / "log.jsonl"))
+    monkeypatch.delenv("FSORT_YES", raising=False)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    f = touch(tmp_path / "a.tmp")
+    acc = config.load_and_validate()["limpiar-auto"]
+    fsort.run_python_action("limpiar-auto", acc, [str(tmp_path)])
+    assert f.exists()
+    assert "sin TTY" in capsys.readouterr().out
+
+
+def test_limpiar_auto_con_yes_si_mueve(tmp_path, monkeypatch):
+    monkeypatch.setenv("FSORT_TRASH_DIR", str(tmp_path / "trash"))
+    monkeypatch.setenv("FSORT_LOG_FILE", str(tmp_path / "log.jsonl"))
+    monkeypatch.setenv("FSORT_YES", "1")
+    f = touch(tmp_path / "a.tmp")
+    acc = config.load_and_validate()["limpiar-auto"]
+    fsort.run_python_action("limpiar-auto", acc, [str(tmp_path)])
+    assert not f.exists()
+    assert (tmp_path / "trash" / "a.tmp").exists()
+
+
+def test_limpiar_auto_registered():
+    from fsort import config
+    actions = config.load_and_validate()
+    assert actions["limpiar-auto"]["func"] == "clean_temp"
+    assert actions["limpiar-auto"]["kwargs"]["assume_yes"] is True
+
+
+def test_clean_temp_assume_yes_sin_tty_cancela(tmp_path, monkeypatch, capsys):
+    """clean_temp(assume_yes=True) sin TTY y sin FSORT_YES: no mueve nada."""
+    monkeypatch.setenv("FSORT_TRASH_DIR", str(tmp_path / "trash"))
+    monkeypatch.delenv("FSORT_YES", raising=False)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    f = touch(tmp_path / "a.tmp")
+    fsort.clean_temp(tmp_path, assume_yes=True)
+    assert f.exists()
+    assert "cancelado" in capsys.readouterr().out.lower()
