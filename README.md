@@ -43,6 +43,7 @@ tests/                   # pytest (lógica, CLI, imports, errores)
 | `mover-copiar` | Copia archivos o carpetas al directorio destino en lugar de moverlos | `fsort.py mover-copiar <elemento>... <destino>` |
 | `duplicados` | Detecta archivos duplicados (mismo contenido) en un directorio mostrando los grupos y el espacio recuperable | `fsort.py duplicados <directorio>` |
 | `duplicados-eliminar` | Detecta archivos duplicados y, en interactivos, deja elegir qué copia conservar de cada grupo (por defecto conserva el más antiguo y elimina el resto) | `fsort.py duplicados-eliminar <directorio>` |
+| `reporte` | Resumen de un directorio: nº de archivos, tamaño total, top de extensiones, temporales detectados y duplicados (solo lectura). Acepta 'top' de extensiones como segundo argumento | `fsort.py reporte <directorio>` |
 | `mas-grandes` | Lista los archivos más grandes de un directorio (top N, por defecto 10). Acepta 'top' como segundo argumento | `fsort.py mas-grandes <directorio> [top]` |
 | `mas-grandes-eliminar` | Igual que 'mas-grandes' pero elimina los N archivos más grandes. Usa --dry-run para simular | `fsort.py mas-grandes-eliminar <directorio> [top]` |
 | `vaciar-papelera` | Muestra el contenido de la papelera (por defecto ./trash o FSORT_TRASH_DIR) sin borrar | `fsort.py vaciar-papelera [papelera]` |
@@ -65,6 +66,7 @@ fsort ordenar ~/Descargas
 # Ejemplos
 python3 fsort.py ordenar ~/Descargas
 python3 fsort.py info ~/Documentos
+python3 fsort.py reporte ~/Descargas
 python3 fsort.py mover foto.jpg docs ~/Todos
 
 # Listar los comandos disponibles

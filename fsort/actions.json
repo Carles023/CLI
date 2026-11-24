@@ -68,6 +68,12 @@
       "func": "find_duplicates",
       "kwargs": {"delete": true, "interactive": true}
     },
+    "reporte": {
+      "description": "Resumen de un directorio: nº de archivos, tamaño total, top de extensiones, temporales detectados y duplicados (solo lectura). Acepta 'top' de extensiones como segundo argumento",
+      "type": "python",
+      "func": "dir_report",
+      "kwargs": {}
+    },
     "mas-grandes": {
       "description": "Lista los archivos más grandes de un directorio (top N, por defecto 10). Acepta 'top' como segundo argumento",
       "type": "python",

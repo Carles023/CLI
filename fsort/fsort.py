@@ -657,12 +657,15 @@ def _human_size(num: float) -> str:
 
 
 def find_duplicates(directory: Path, dry_run: bool = False, delete: bool = False,
-                    interactive: bool = False, recursive: bool = True, min_size: int = 1):
+                    interactive: bool = False, recursive: bool = True, min_size: int = 1,
+                    quiet: bool = False):
     """
     Detecta archivos duplicados (mismo contenido) comparando primero el tamaño y
     luego el hash SHA-256. Agrupa los duplicados y muestra cuáles conservar.
     Con 'delete=True' elimina los redundantes (conserva el más antiguo).
     Con 'interactive=True' permite elegir qué copia conservar en cada grupo.
+    Con 'quiet=True' no imprime detalle por grupo; devuelve
+    {'groups': n, 'wasted': bytes} para reutilizar el resultado (usa 'reporte').
     """
     if not directory.exists():
         raise DirectoryNotFoundError(str(directory))
@@ -703,8 +706,9 @@ def find_duplicates(directory: Path, dry_run: bool = False, delete: bool = False
     groups = [paths for paths in by_hash.values() if len(paths) > 1]
 
     if not groups:
-        cprint("No se encontraron archivos duplicados.")
-        return
+        if not quiet:
+            cprint("No se encontraron archivos duplicados.")
+        return {"groups": 0, "wasted": 0}
 
     groups.sort(key=lambda paths: paths[0].stat().st_size * (len(paths) - 1), reverse=True)
 
@@ -719,7 +723,8 @@ def find_duplicates(directory: Path, dry_run: bool = False, delete: bool = False
         size = paths[0].stat().st_size
         paths_sorted = sorted(paths, key=lambda p: p.stat().st_mtime)
 
-        cprint(f"[{idx}/{total_groups}] {_human_size(size)} c/u — {len(paths_sorted)} copias:")
+        if not quiet:
+            cprint(f"[{idx}/{total_groups}] {_human_size(size)} c/u — {len(paths_sorted)} copias:")
 
         if interactive:
             cprint("  Elige qué copia conservar:")
@@ -748,48 +753,57 @@ def find_duplicates(directory: Path, dry_run: bool = False, delete: bool = False
                 cprint(f"  Opción no válida. Elige un número entre 1 y {len(paths_sorted)}, "
                       "'s' para saltar o 'q' para salir.")
             if choice is None:
-                for p in paths_sorted:
-                    cprint(f"  Duplicado (omitido): {p}")
-                cprint()
+                if not quiet:
+                    for p in paths_sorted:
+                        cprint(f"  Duplicado (omitido): {p}")
+                    cprint()
                 continue
             keep = paths_sorted[choice - 1]
             redundant = [p for p in paths_sorted if p != keep]
-            cprint(f"  Conservar: {keep}")
+            if not quiet:
+                cprint(f"  Conservar: {keep}")
         else:
             # Conservar el más antiguo (menor mtime) como "original"
             keep, *redundant = paths_sorted
-            cprint(f"  Conservar: {keep}")
+            if not quiet:
+                cprint(f"  Conservar: {keep}")
 
         wasted += size * len(redundant)
 
         for dup in redundant:
             if delete or interactive:
                 if dry_run:
-                    cprint(f"  [DRY-RUN] Eliminaría: {dup}")
+                    if not quiet:
+                        cprint(f"  [DRY-RUN] Eliminaría: {dup}")
                     continue
                 try:
                     dup.unlink()
-                    cprint(f"  Eliminado: {dup}")
+                    if not quiet:
+                        cprint(f"  Eliminado: {dup}")
                     deleted_count += 1
                 except Exception as e:
                     raise OperationError(f"{dup}: {e}")
-            else:
+            elif not quiet:
                 cprint(f"  Duplicado: {dup}")
-        cprint()
+        if not quiet:
+            cprint()
 
-    cprint()
-    if delete or deleted_count:
-        if dry_run:
-            cprint(f"[DRY-RUN] {total_groups} grupo(s) de duplicados. "
-                  f"Se liberarían {_human_size(wasted)}. "
-                  "Usa sin --dry-run para eliminar los duplicados.")
+    if not quiet:
+        cprint()
+        if delete or deleted_count:
+            if dry_run:
+                cprint(f"[DRY-RUN] {total_groups} grupo(s) de duplicados. "
+                      f"Se liberarían {_human_size(wasted)}. "
+                      "Usa sin --dry-run para eliminar los duplicados.")
+            else:
+                cprint(f"Completado: {deleted_count} archivo(s) duplicado(s) eliminados. "
+                      f"Liberado: {_human_size(wasted)}.")
         else:
-            cprint(f"Completado: {deleted_count} archivo(s) duplicado(s) eliminados. "
-                  f"Liberado: {_human_size(wasted)}.")
-    else:
-        cprint(f"Encontrados {total_groups} grupo(s) de duplicados. "
-              f"Espacio recuperable: {_human_size(wasted)}.")
-        cprint("Usa 'duplicados-eliminar' para eliminar los redundantes.")
+            cprint(f"Encontrados {total_groups} grupo(s) de duplicados. "
+                  f"Espacio recuperable: {_human_size(wasted)}.")
+            cprint("Usa 'duplicados-eliminar' para eliminar los redundantes.")
+
+    return {"groups": total_groups, "wasted": wasted}
 
 
 def _sha256(file_path: Path):
@@ -1177,6 +1191,88 @@ def clean_temp(directory: Path, dry_run: bool = False, assume_yes: bool = False,
             raise OperationError(f"{p}: {e}")
 
     cprint(f"\nCompletado: {moved} archivo(s) movidos a {trash}.")
+
+
+def dir_report(directory: Path, dry_run: bool = False, top: int = 10):
+    """
+    Resumen de un directorio: archivos, tamaños, top de extensiones,
+    archivos temporales (limpiadores con 'limpiar') y duplicados.
+    Solo lectura: no mueve ni elimina nada.
+    """
+    try:
+        top = int(top)
+    except (TypeError, ValueError):
+        raise InvalidArgumentError(f"el número de extensiones debe ser un entero, no '{top}'")
+    if top <= 0:
+        raise InvalidArgumentError(f"el número de extensiones debe ser mayor que 0, no '{top}'")
+
+    if not directory.exists():
+        raise DirectoryNotFoundError(str(directory))
+    if not directory.is_dir():
+        raise NotADirectoryError_(str(directory))
+
+    import fnmatch
+
+    script_name = Path(__file__).name
+
+    def is_temp(p: Path) -> bool:
+        for pat in TEMP_PATTERNS:
+            if pat.startswith("*"):
+                if p.name.lower().endswith(pat[1:].lstrip("*")):
+                    return True
+            elif fnmatch.fnmatch(p.name.lower(), pat.lower()):
+                return True
+        return False
+
+    files = []
+    subdirs = 0
+    total_size = 0
+    ext_size: dict = {}
+    ext_count: dict = {}
+    temp_files = []
+
+    for entry in directory.rglob("*"):
+        try:
+            if entry.is_dir():
+                subdirs += 1
+                continue
+            if not entry.is_file() or entry.name in (script_name, "fsort.py"):
+                continue
+            size = entry.stat().st_size
+        except OSError:
+            continue
+        files.append(entry)
+        total_size += size
+        ext = entry.suffix.lower() or "sin_extension"
+        ext_size[ext] = ext_size.get(ext, 0) + size
+        ext_count[ext] = ext_count.get(ext, 0) + 1
+        if is_temp(entry):
+            temp_files.append(entry)
+
+    cprint(f"Reporte de: {directory}")
+    cprint("-" * 70)
+    cprint(f"  Archivos:        {len(files)}")
+    cprint(f"  Subcarpetas:     {subdirs}")
+    cprint(f"  Tamaño total:    {_human_size(total_size)}")
+
+    if ext_size:
+        top_ext = sorted(ext_size.items(), key=lambda kv: kv[1], reverse=True)[:top]
+        cprint(f"\n  Top {len(top_ext)} extensiones por tamaño:")
+        for rank, (ext, size) in enumerate(top_ext, 1):
+            cprint(f"    {rank:>2}. {ext:<14} {_human_size(size):>10}  "
+                  f"({ext_count[ext]} archivo(s))")
+
+    if temp_files:
+        temp_size = sum(f.stat().st_size for f in temp_files if f.exists())
+        cprint(f"\n  Temporales/basura detectados: {len(temp_files)} "
+              f"({_human_size(temp_size)}) — usa 'limpiar {directory}'")
+
+    dups = find_duplicates(directory, dry_run=True, quiet=True)
+    if dups.get("groups"):
+        cprint(f"\n  Duplicados: {dups['groups']} grupo(s), "
+              f"recuperable {_human_size(dups['wasted'])} — usa 'duplicados {directory}'")
+
+    cprint()
 
 
 def empty_trash(directory: Path = None, dry_run: bool = False,

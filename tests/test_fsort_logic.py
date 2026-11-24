@@ -245,3 +245,64 @@ def test_empty_trash_delete(tmp_path, monkeypatch):
     monkeypatch.setenv("FSORT_TRASH_DIR", str(trash))
     fsort.empty_trash(delete=True)
     assert not f.exists()
+
+
+# --- dir_report ---------------------------------------------------------------
+
+def _poblado(tmp_path):
+    (tmp_path / "a.txt").write_text("contenido duplicado")
+    (tmp_path / "b.txt").write_text("contenido duplicado")
+    (tmp_path / "c.tmp").write_text("x")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "d.pdf").write_text("y")
+
+
+def test_reporte_summary(tmp_path, capsys):
+    _poblado(tmp_path)
+    fsort.dir_report(tmp_path)
+    out = capsys.readouterr().out
+    assert "Archivos:" in out and "4" in out
+    assert "Top" in out and ".txt" in out
+    assert "Temporales" in out
+    assert "Duplicados: 1" in out
+
+
+def test_reporte_sense_temporals(tmp_path, capsys):
+    (tmp_path / "a.txt").write_text("z")
+    fsort.dir_report(tmp_path)
+    out = capsys.readouterr().out
+    assert "Temporales" not in out
+    assert "Duplicados" not in out
+
+
+def test_reporte_top_invalido(tmp_path):
+    _poblado(tmp_path)
+    with pytest.raises(InvalidArgumentError):
+        fsort.dir_report(tmp_path, top="cero")
+
+
+def test_reporte_directorio_no_existe(tmp_path):
+    with pytest.raises(DirectoryNotFoundError):
+        fsort.dir_report(tmp_path / "nada")
+
+
+def test_find_duplicates_quiet(tmp_path, capsys):
+    _poblado(tmp_path)
+    res = fsort.find_duplicates(tmp_path, quiet=True)
+    out = capsys.readouterr().out
+    assert res["groups"] == 1
+    assert res["wasted"] > 0
+    assert out == ""
+
+
+def test_find_duplicates_retorna_groups(tmp_path):
+    (tmp_path / "u.txt").write_text("unico")
+    res = fsort.find_duplicates(tmp_path, quiet=True)
+    assert res == {"groups": 0, "wasted": 0}
+
+
+def test_reporte_comando_real(tmp_path):
+    """'reporte' existeix en actions.json i apunta a dir_report."""
+    from fsort import config
+    actions = config.load_and_validate()
+    assert actions["reporte"]["func"] == "dir_report"

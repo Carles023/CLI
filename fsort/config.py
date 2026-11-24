@@ -26,6 +26,7 @@ AI_SYSTEM_PROMPT = (
     "  vaciar-papelera [papelera], vaciar-papelera-ya [papelera]\n"
     "  resumir <archivo> [destino.txt]\n"
     "  info <dir>, tamano <dir>, limpiar <dir>\n"
+    "  reporte <dir> [N]  (resumen: tamaño, extensiones, duplicados, temporales)\n"
     "Opciones globales: --dry-run (-d) para simular, --actions para listar comandos,\n"
     "  --ai \"pregunta\" para consultar la IA.\n"
     "Responde SIEMPRE en el mismo idioma que la pregunta del usuario "
