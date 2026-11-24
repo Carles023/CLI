@@ -98,6 +98,36 @@
       "func": "largest_files",
       "kwargs": {}
     },
+    "mas-antiguos": {
+      "description": "Lista los archivos más antiguos de un directorio ordenados del más viejo al más nuevo (top N, por defecto 15). Acepta 'top' como segundo argumento",
+      "type": "python",
+      "func": "oldest_files",
+      "kwargs": {}
+    },
+    "por-edad": {
+      "description": "Mueve a la papelera los archivos con más de N días desde su última modificación (por defecto 365). Recursivo; usa --dry-run para simular. Recuperable con 'deshacer-limpieza'. Acepta 'días' como segundo argumento",
+      "type": "python",
+      "func": "aged_files",
+      "kwargs": {}
+    },
+    "por-edad-eliminar": {
+      "description": "Como 'por-edad' pero elimina los archivos en lugar de moverlos a la papelera (sin recuperación). Acepta 'días' como segundo argumento. Usa --dry-run para simular",
+      "type": "python",
+      "func": "aged_files",
+      "kwargs": {"delete": true}
+    },
+    "por-edad-txt": {
+      "description": "Como 'por-edad' pero solo con archivos .txt. Acepta 'días' como segundo argumento",
+      "type": "python",
+      "func": "aged_files",
+      "kwargs": {"ext": "txt"}
+    },
+    "mas-antiguos-txt": {
+      "description": "Como 'mas-antiguos' pero solo con archivos .txt. Acepta 'top' como segundo argumento",
+      "type": "python",
+      "func": "oldest_files",
+      "kwargs": {"ext": "txt"}
+    },
     "mas-grandes-eliminar": {
       "description": "Igual que 'mas-grandes' pero elimina los N archivos más grandes. Usa --dry-run para simular",
       "type": "python",

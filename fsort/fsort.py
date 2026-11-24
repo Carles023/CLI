@@ -395,13 +395,17 @@ def run_python_action(name: str, action: dict, args: list, dry_run: bool = False
         path = Path(args[0]).expanduser()
         output = Path(args[1]).expanduser() if len(args) > 1 else None
         func(path, output, **kwargs)
-    elif func is largest_files:
+    elif func in (largest_files, oldest_files, aged_files):
+        argname = "días" if func is aged_files else "top"
         if not args:
             raise InvalidArgumentError(
-                f"'{name}': falta el directorio (fsort.py {name} <directorio> [top])")
+                f"'{name}': falta el directorio (fsort.py {name} <directorio> [{argname}])")
         directory = _checked_dir(args[0], name)
         if len(args) > 1:
-            kwargs["top"] = args[1]
+            kwargs["top" if func is oldest_files else
+                           ("days" if func is aged_files else "top")] = args[1]
+        if func is aged_files:
+            kwargs["assume_yes"] = (os.environ.get("FSORT_YES") == "1")
         func(directory, **kwargs)
     elif func is undo_clean:
         trash_arg = Path(args[0]).expanduser() if args else None
@@ -1105,6 +1109,149 @@ def _match_name(name: str, pattern: str) -> bool:
     if any(c in p for c in "*?["):
         return fnmatch.fnmatch(lowered, p)
     return lowered == p or lowered == f".{p.lstrip('.')}" or lowered.endswith(f".{p.lstrip('.')}")
+
+
+def _iter_files_sorted_by_mtime(directory: Path, ext: str = "*", recursive: bool = True) -> list:
+    """Archivos del directorio ordenados por mtime (mas antiguos primero).
+
+    Excluye el propio script. 'ext' filtra por extension (ver _match_name).
+    """
+    script_name = Path(__file__).name
+    walker = directory.rglob("*") if recursive else directory.iterdir()
+    entries = []
+    for file_path in walker:
+        try:
+            if not file_path.is_file():
+                continue
+            if file_path.name == script_name or file_path.name == "fsort.py":
+                continue
+            if not _match_name(file_path.name, ext):
+                continue
+            entries.append((file_path.stat().st_mtime, file_path))
+        except OSError:
+            continue
+    entries.sort(key=lambda item: item[0])
+    return entries
+
+
+def oldest_files(directory: Path, top: int = 15, dry_run: bool = False,
+                 ext: str = "*", recursive: bool = True):
+    """
+    Lista los archivos mas antiguos de un directorio (por defecto los 15 primeros,
+    ordenados del mas viejo al mas nuevo). 'ext' permite filtrar por extension.
+    """
+    if not directory.exists():
+        raise DirectoryNotFoundError(str(directory))
+    if not directory.is_dir():
+        raise NotADirectoryError_(str(directory))
+
+    try:
+        top = int(top)
+    except (TypeError, ValueError):
+        raise InvalidArgumentError(f"el número de archivos debe ser un entero, no '{top}'")
+    if top <= 0:
+        raise InvalidArgumentError(f"el número de archivos debe ser mayor que 0, no '{top}'")
+
+    import datetime as _dt
+    entries = _iter_files_sorted_by_mtime(directory, ext, recursive)
+    if not entries:
+        cprint("No hay archivos que analizar.")
+        return
+
+    selected = entries[:top]
+    cprint(f"Top {len(selected)} archivo(s) mas antiguos en {directory}"
+          + (f" (extensión: {ext})" if ext != "*" else "") + ":")
+    for rank, (mtime, file_path) in enumerate(selected, 1):
+        days = int((_dt.datetime.now().timestamp() - mtime) // 86400)
+        fecha = _dt.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
+        cprint(f"  {rank:>2}. {fecha}  {days:>4} d  {_human_size(file_path.stat().st_size):>9}  {file_path}")
+    cprint()
+    cprint(f"Total listados: {len(selected)}. Usa 'por-edad <directorio> [días]' para mover los viejos a la papelera.")
+
+
+def aged_files(directory: Path, days: int = 365, dry_run: bool = False,
+               ext: str = "*", assume_yes: bool = False, delete: bool = False):
+    """
+    Mueve a la papelera (o elimina con delete=True) los archivos con mas de N dias
+    desde su ultima modificacion. Recursivo. Pide confirmacion salvo --yes/--dry-run.
+    Registra los movidos en el log: se pueden recuperar con 'deshacer-limpieza'.
+    """
+    if not directory.exists():
+        raise DirectoryNotFoundError(str(directory))
+    if not directory.is_dir():
+        raise NotADirectoryError_(str(directory))
+
+    try:
+        days = int(days)
+    except (TypeError, ValueError):
+        raise InvalidArgumentError(f"el número de días debe ser un entero, no '{days}'")
+    if days < 0:
+        raise InvalidArgumentError(f"el número de días debe ser 0 o más, no '{days}'")
+
+    import datetime as _dt
+    umbral = _dt.datetime.now().timestamp() - days * 86400
+    entries = [(m, f) for m, f in _iter_files_sorted_by_mtime(directory, ext) if m < umbral]
+
+    if not entries:
+        cprint(f"Ningun archivo con mas de {days} dia(s) de modificacion en {directory}.")
+        return
+
+    total_size = sum(f.stat().st_size for _, f in entries if f.exists())
+    cprint(f"{len(entries)} archivo(s) con mas de {days} dia(s) ({_human_size(total_size)}):")
+    for mtime, file_path in entries:
+        fecha = _dt.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
+        cprint(f"  {fecha}  {file_path}")
+    cprint()
+
+    if dry_run:
+        verbo = "eliminaria" if delete else "moveria a la papelera"
+        cprint(f"[DRY-RUN] Se {verbo} {len(entries)} archivo(s). "
+               "Usa sin --dry-run para aplicar.")
+        return
+
+    if not (assume_yes or os.environ.get("FSORT_YES") == "1"):
+        if not _confirm("Confirmar? [s/N] "):
+            cprint("Cancelado: no se ha movido nada.")
+            return
+    else:
+        cprint("  (--yes/FSORT_YES: confirmado automaticamente)")
+
+    if delete:
+        removed = 0
+        for _, file_path in entries:
+            try:
+                file_path.unlink()
+                cprint(f"Eliminado: {file_path}")
+                removed += 1
+            except Exception as e:
+                raise OperationError(f"{file_path}: {e}")
+        cprint(f"\nCompletado: {removed} archivo(s) eliminados. "
+              f"Liberado: {_human_size(total_size)}.")
+        return
+
+    trash = Path(os.environ.get("FSORT_TRASH_DIR", "trash")).expanduser()
+    trash.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    logged = []
+    for _, file_path in entries:
+        dest = trash / file_path.name
+        if dest.exists():
+            counter = 1
+            original = dest
+            while dest.exists():
+                dest = original.with_name(f"{original.stem}_{counter}{original.suffix}")
+                counter += 1
+        try:
+            shutil.move(str(file_path), str(dest))
+            cprint(f"Movido: {file_path} -> {trash}/")
+            logged.append((str(file_path), str(dest)))
+            moved += 1
+        except Exception as e:
+            raise OperationError(f"{file_path}: {e}")
+    if logged:
+        _append_move_log(logged)
+    cprint(f"\nCompletado: {moved} archivo(s) movidos a {trash} "
+          "(recuperables con 'deshacer-limpieza').")
 
 
 def largest_files(directory: Path, top: int = 10, dry_run: bool = False,
@@ -1876,6 +2023,10 @@ def dispatch(args, extra: list, actions: dict):
             example = f"fsort.py {command} <directorio> <destino>"
         elif action.get("func") == "largest_files":
             example = f"fsort.py {command} <directorio> [top]"
+        elif action.get("func") == "oldest_files":
+            example = f"fsort.py {command} <directorio> [top]"
+        elif action.get("func") == "aged_files":
+            example = f"fsort.py {command} <directorio> [días]"
         elif action.get("func") == "find_duplicates":
             example = f"fsort.py {command} <directorio>"
         elif action.get("func") == "empty_trash":

@@ -528,3 +528,122 @@ def test_move_no_overwrite_no_pisa(tmp_path):
     assert final.name == "a_1.txt"
     assert final.read_text(encoding="utf-8") == "nuevo"
     assert not orig.exists()
+
+
+# --- mas-antiguos / por-edad --------------------------------------------------
+
+def _fechas(tmp_path):
+    import os, time
+    for nombre, dias in (("viejo1.txt", 400), ("viejo2.log", 500),
+                         ("medio.pdf", 100), ("nuevo.jpg", 1)):
+        f = tmp_path / nombre
+        f.write_bytes(b"x" * 10)
+        t = time.time() - dias * 86400
+        os.utime(f, (t, t))
+
+
+def test_oldest_files_top(tmp_path, capsys):
+    _fechas(tmp_path)
+    fsort.oldest_files(tmp_path, top=2)
+    out = capsys.readouterr().out
+    assert "viejo2.log" in out and "viejo1.txt" in out
+    assert "nuevo.jpg" not in out
+
+
+def test_oldest_files_top_invalido(tmp_path):
+    _fechas(tmp_path)
+    with pytest.raises(InvalidArgumentError):
+        fsort.oldest_files(tmp_path, top="cero")
+    with pytest.raises(InvalidArgumentError):
+        fsort.oldest_files(tmp_path, top=0)
+
+
+def test_oldest_files_ext(tmp_path, capsys):
+    _fechas(tmp_path)
+    fsort.oldest_files(tmp_path, ext="log")
+    out = capsys.readouterr().out
+    assert "viejo2.log" in out and "viejo1.txt" not in out
+
+
+def test_aged_files_filtra_dias(tmp_path, capsys):
+    _fechas(tmp_path)
+    fsort.aged_files(tmp_path, days=365, dry_run=True)
+    out = capsys.readouterr().out
+    assert "viejo1.txt" in out and "viejo2.log" in out
+    assert "medio.pdf" not in out and "nuevo.jpg" not in out
+    assert (tmp_path / "viejo1.txt").exists()
+
+
+def test_aged_files_mueve_papelera_y_undo(tmp_path, monkeypatch):
+    _fechas(tmp_path)
+    monkeypatch.setenv("FSORT_TRASH_DIR", str(tmp_path / "trash"))
+    monkeypatch.setenv("FSORT_LOG_FILE", str(tmp_path / "log.jsonl"))
+    monkeypatch.setenv("FSORT_YES", "1")
+    fsort.aged_files(tmp_path, days=365)
+    assert not (tmp_path / "viejo1.txt").exists()
+    assert (tmp_path / "trash" / "viejo1.txt").exists()
+    fsort.undo_clean(assume_yes=True)
+    assert (tmp_path / "viejo1.txt").exists()
+
+
+def test_aged_files_delete(tmp_path, monkeypatch):
+    _fechas(tmp_path)
+    monkeypatch.setenv("FSORT_YES", "1")
+    fsort.aged_files(tmp_path, days=365, delete=True)
+    assert not (tmp_path / "viejo1.txt").exists()
+    assert (tmp_path / "medio.pdf").exists()
+
+
+def test_aged_files_dias_invalidos(tmp_path):
+    _fechas(tmp_path)
+    with pytest.raises(InvalidArgumentError):
+        fsort.aged_files(tmp_path, days="muchos")
+    with pytest.raises(InvalidArgumentError):
+        fsort.aged_files(tmp_path, days=-1)
+
+
+def test_aged_files_sin_candidatos(tmp_path, capsys):
+    _fechas(tmp_path)
+    fsort.aged_files(tmp_path, days=10000, dry_run=True)
+    assert "Ningun archivo" in capsys.readouterr().out
+
+
+def test_aged_files_sin_tty_no_mueve(tmp_path, monkeypatch, no_tty):
+    _fechas(tmp_path)
+    monkeypatch.setenv("FSORT_TRASH_DIR", str(tmp_path / "trash"))
+    monkeypatch.delenv("FSORT_YES", raising=False)
+    fsort.aged_files(tmp_path, days=365)
+    assert (tmp_path / "viejo1.txt").exists()
+
+
+def test_accions_edad_registered():
+    from fsort import config
+    actions = config.load_and_validate()
+    assert actions["mas-antiguos"]["func"] == "oldest_files"
+    assert actions["por-edad"]["func"] == "aged_files"
+    assert actions["por-edad-eliminar"]["kwargs"]["delete"] is True
+    assert actions["por-edad-txt"]["kwargs"]["ext"] == "txt"
+
+
+def test_cli_mas_antiguos_args(tmp_path):
+    """El 2n argument (top) arriba correctament a la funcio."""
+    _fechas(tmp_path)
+    acc = config.load_and_validate()["mas-antiguos"]
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        fsort.run_python_action("mas-antiguos", acc, [str(tmp_path), "1"])
+    out = buf.getvalue()
+    assert "viejo2.log" in out
+    assert "viejo1.txt" not in out
+
+
+def test_cli_por_edad_args(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("FSORT_TRASH_DIR", str(tmp_path / "trash"))
+    monkeypatch.setenv("FSORT_LOG_FILE", str(tmp_path / "log.jsonl"))
+    monkeypatch.setenv("FSORT_YES", "1")
+    _fechas(tmp_path)
+    acc = config.load_and_validate()["por-edad"]
+    fsort.run_python_action("por-edad", acc, [str(tmp_path), "365"])
+    assert not (tmp_path / "viejo1.txt").exists()
+    assert (tmp_path / "medio.pdf").exists()

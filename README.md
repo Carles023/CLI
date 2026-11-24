@@ -49,6 +49,11 @@ tests/                   # pytest (lógica, CLI, imports, errores)
 | `duplicados-eliminar` | Detecta archivos duplicados y, en interactivos, deja elegir qué copia conservar de cada grupo (por defecto conserva el más antiguo y elimina el resto) | `fsort.py duplicados-eliminar <directorio>` |
 | `reporte` | Resumen de un directorio: nº de archivos, tamaño total, top de extensiones, temporales detectados y duplicados (solo lectura). Acepta 'top' de extensiones como segundo argumento | `fsort.py reporte <directorio>` |
 | `mas-grandes` | Lista los archivos más grandes de un directorio (top N, por defecto 10). Acepta 'top' como segundo argumento | `fsort.py mas-grandes <directorio> [top]` |
+| `mas-antiguos` | Lista los archivos más antiguos de un directorio ordenados del más viejo al más nuevo (top N, por defecto 15). Acepta 'top' como segundo argumento | `fsort.py mas-antiguos <directorio> [top]` |
+| `por-edad` | Mueve a la papelera los archivos con más de N días desde su última modificación (por defecto 365). Recursivo; usa --dry-run para simular. Recuperable con 'deshacer-limpieza'. Acepta 'días' como segundo argumento | `fsort.py por-edad <directorio> [días]` |
+| `por-edad-eliminar` | Como 'por-edad' pero elimina los archivos en lugar de moverlos a la papelera (sin recuperación). Acepta 'días' como segundo argumento. Usa --dry-run para simular | `fsort.py por-edad-eliminar <directorio> [días]` |
+| `por-edad-txt` | Como 'por-edad' pero solo con archivos .txt. Acepta 'días' como segundo argumento | `fsort.py por-edad-txt <directorio> [días]` |
+| `mas-antiguos-txt` | Como 'mas-antiguos' pero solo con archivos .txt. Acepta 'top' como segundo argumento | `fsort.py mas-antiguos-txt <directorio> [top]` |
 | `mas-grandes-eliminar` | Igual que 'mas-grandes' pero elimina los N archivos más grandes. Usa --dry-run para simular | `fsort.py mas-grandes-eliminar <directorio> [top]` |
 | `vaciar-papelera` | Muestra el contenido de la papelera (por defecto ./trash o FSORT_TRASH_DIR) sin borrar | `fsort.py vaciar-papelera [papelera]` |
 | `vaciar-papelera-ya` | Vacía la papelera eliminando permanentemente su contenido. Acepta la papelera como argumento opcional. Usa --dry-run para simular | `fsort.py vaciar-papelera-ya [papelera]` |

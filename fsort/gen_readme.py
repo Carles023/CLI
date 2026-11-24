@@ -35,6 +35,10 @@ def build_table(actions: dict) -> str:
             usage += " <directorio>"
         elif name.startswith("mas-grandes"):
             usage += " <directorio> [top]"
+        elif name.startswith("mas-antiguos"):
+            usage += " <directorio> [top]"
+        elif name.startswith("por-edad"):
+            usage += " <directorio> [días]"
         elif name.startswith("vaciar-papelera"):
             usage += " [papelera]"
         elif action.get("func") == "undo_clean":
