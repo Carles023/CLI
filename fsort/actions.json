@@ -46,6 +46,12 @@
       "func": "sort_files",
       "kwargs": {"recursive": true}
     },
+    "ordenar-auto": {
+      "description": "Como 'ordenar' pero agrupa en carpetas con nombres humanos (imagenes/, documentos/, musica/, video/, archives/, programas/, codigo/, fuentes/, otros/) en lugar de una carpeta por extension",
+      "type": "python",
+      "func": "sort_files",
+      "kwargs": {"folder_mode": "human"}
+    },
     "vaciar": {
       "description": "Vacía las subcarpetas de un directorio moviendo sus archivos al destino indicado ({2}) y elimina las carpetas vacías",
       "type": "python",

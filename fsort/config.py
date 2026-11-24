@@ -18,7 +18,7 @@ PLACEHOLDER_RE = re.compile(r"\{(\d+)\}")
 AI_SYSTEM_PROMPT = (
     "Eres el asistente de 'fsort', una CLI en Python para organizar archivos.\n"
     "Comandos REALES (usa SOLO estos; NO inventes nombres como sort, dup, big o move):\n"
-    "  ordenar <dir>, ordenar-copiar <dir>, ordenar-recursivo <dir>\n"
+    "  ordenar <dir>, ordenar-copiar <dir>, ordenar-recursivo <dir>, ordenar-auto <dir>\n"
     "  vaciar <dir> <destino>, vaciar-copiar <dir> <destino>\n"
     "  mover <elem...> <destino>, mover-copiar <elem...> <destino>\n"
     "  duplicados <dir>, duplicados-eliminar <dir>\n"

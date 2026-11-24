@@ -440,3 +440,91 @@ def test_clean_temp_assume_yes_sin_tty_cancela(tmp_path, monkeypatch, capsys):
     fsort.clean_temp(tmp_path, assume_yes=True)
     assert f.exists()
     assert "cancelado" in capsys.readouterr().out.lower()
+
+
+# --- ordenar-auto (folder_mode='human') ---------------------------------------
+
+def _human_dirs(d: Path):
+    return sorted(p.name for p in d.iterdir() if p.is_dir())
+
+
+def test_sort_files_human_categorias(tmp_path):
+    for n in ("foto.jpg", "otra.PNG", "info.pdf", "cancion.mp3", "peli.mkv",
+              "paquete.zip", "app.exe", "script.py", "font.ttf", "cosa.xyz"):
+        touch(tmp_path / n)
+    touch(tmp_path / "sinext")
+    fsort.sort_files(tmp_path, folder_mode="human")
+    dirs = _human_dirs(tmp_path)
+    assert dirs == ["archives", "codigo", "documentos", "fuentes", "imagenes",
+                    "musica", "otros", "programas", "sin_extension", "video"]
+    assert (tmp_path / "imagenes" / "otra.PNG").exists()
+    assert (tmp_path / "otros" / "cosa.xyz").exists()
+
+
+def test_sort_files_human_colisiones(tmp_path):
+    d = tmp_path / "imagenes"
+    d.mkdir()
+    viejo = d / "foto.png"
+    viejo.write_text("viejo")
+    touch(tmp_path / "foto.png", "nuevo")
+    fsort.sort_files(tmp_path, folder_mode="human")
+    assert viejo.read_text(encoding="utf-8") == "viejo"
+    assert (d / "foto_1.png").read_text(encoding="utf-8") == "nuevo"
+
+
+def test_sort_files_human_dry_run(tmp_path):
+    f = touch(tmp_path / "foto.jpg")
+    fsort.sort_files(tmp_path, folder_mode="human", dry_run=True)
+    assert f.exists()
+
+
+def test_sort_files_human_recursivo(tmp_path):
+    touch(tmp_path / "sub" / "foto.jpg")
+    fsort.sort_files(tmp_path, folder_mode="human", recursive=True)
+    assert (tmp_path / "imagenes" / "foto.jpg").exists()
+
+
+def test_sort_files_ext_conserva_comportament(tmp_path):
+    """El modo clasico sigue moviendo a carpetas por extension."""
+    touch(tmp_path / "a.png")
+    fsort.sort_files(tmp_path)
+    assert (tmp_path / "png" / "a.png").exists()
+
+
+def test_folder_for_helpers():
+    assert fsort._folder_for(".jpg") == "jpg"
+    assert fsort._folder_for(".jpg", "human") == "imagenes"
+    assert fsort._folder_for(".docx", "human") == "documentos"
+    assert fsort._folder_for(".xyz", "human") == "otros"
+    assert fsort._folder_for("", "human") == "sin_extension"
+
+
+def test_dest_for_sense_mode_human_no_renombra(tmp_path):
+    d = tmp_path / "png"
+    d.mkdir()
+    (d / "a.png").write_text("v")
+    f = tmp_path / "a.png"
+    f.write_text("n")
+    assert fsort._dest_for(f, d, "ext") == d / "a.png"
+
+
+def test_ordenar_auto_registered():
+    from fsort import config
+    actions = config.load_and_validate()
+    assert actions["ordenar-auto"]["func"] == "sort_files"
+    assert actions["ordenar-auto"]["kwargs"]["folder_mode"] == "human"
+
+
+def test_move_no_overwrite_no_pisa(tmp_path):
+    """_move_no_overwrite: si el destino existe, reubica en _1 sin pisar."""
+    dst = tmp_path / "txt"
+    dst.mkdir()
+    viejo = dst / "a.txt"
+    viejo.write_text("viejo")
+    orig = tmp_path / "a.txt"
+    orig.write_text("nuevo")
+    final = fsort._move_no_overwrite(orig, viejo)
+    assert viejo.read_text(encoding="utf-8") == "viejo"
+    assert final.name == "a_1.txt"
+    assert final.read_text(encoding="utf-8") == "nuevo"
+    assert not orig.exists()

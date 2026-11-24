@@ -430,10 +430,108 @@ def run_python_action(name: str, action: dict, args: list, dry_run: bool = False
             func(directory, **kwargs)
 
 
-def sort_files(directory: Path, dry_run: bool = False, copy: bool = False, recursive: bool = False):
+# Categorias humanas para 'ordenar-auto': cada grupo define carpeta y extensiones.
+FUNC_GROUPS = (
+    ("imagenes", (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".tif", ".webp",
+                  ".heic", ".heif", ".svg", ".ico", ".cr2", ".nef", ".arw", ".raw",
+                  ".psd", ".xcf")),
+    ("documentos", (".pdf", ".doc", ".docx", ".odt", ".rtf", ".pages", ".key", ".ppt",
+                    ".pptx", ".odp", ".xls", ".xlsx", ".ods", ".csv", ".tsv", ".txt",
+                    ".md", ".markdown", ".rst", ".tex", ".org", ".epub", ".mobi",
+                    ".azw3", ".djvu")),
+    ("musica", (".mp3", ".wav", ".flac", ".aac", ".ogg", ".oga", ".opus", ".m4a",
+                ".wma", ".aiff", ".aif", ".mid", ".midi", ".mka")),
+    ("video", (".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v",
+               ".mpg", ".mpeg", ".3gp", ".ts", ".ogv")),
+    ("archives", (".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".zst",
+                  ".tgz", ".tbz2", ".txz", ".lz4", ".iso")),
+    ("programas", (".exe", ".msi", ".apk", ".deb", ".rpm", ".AppImage", ".jar",
+                   ".bin")),
+    ("codigo", (".py", ".js", ".ts", ".jsx", ".tsx", ".c", ".cpp", ".h", ".hpp",
+                ".cs", ".java", ".kt", ".go", ".rs", ".rb", ".php", ".swift",
+                ".sh", ".bash", ".zsh", ".sql", ".html", ".htm", ".css", ".scss",
+                ".less", ".xml", ".json", ".yml", ".yaml", ".toml", ".ini", ".cfg",
+                ".conf", ".env", ".ipynb", ".r", ".lua", ".pl")),
+    ("fuentes", (".ttf", ".otf", ".woff", ".woff2")),
+)
+
+
+def _folder_for(ext: str, mode: str = "ext") -> str:
+    """Carpeta destino de una extension: 'ext' => la propia extension;
+    'human' => categoria legible (imagenes/, musica/...) o 'otros' si no encaja."""
+    if not ext:
+        return "sin_extension"
+    if mode != "human":
+        return ext[1:]
+    for name, exts in FUNC_GROUPS:
+        if ext in exts:
+            return name
+    return "otros"
+
+
+def _dest_for(file_path: Path, dest_folder: Path, mode: str) -> Path:
+    """Ruta destino aplicando sufijos _1.. para no sobrescribir en modo humano."""
+    dest_file = dest_folder / file_path.name
+    if mode != "human" or not dest_file.exists():
+        return dest_file
+    counter = 1
+    while dest_file.exists():
+        dest_file = dest_folder / f"{file_path.stem}_{counter}{file_path.suffix}"
+        counter += 1
+    return dest_file
+
+
+def _move_no_overwrite(src: Path, dst: Path) -> Path:
+    """Mueve src a dst sin sobrescribir. Ni shutil.move ni os.rename/os.replace
+    dan esa garantia (ambos pisan el archivo de destino), asi que si dst existe
+    se reubica en dst_<n>. Para archivos usa hardlink+unlink (sin copia de
+    contenido) con fallback a copy2; para directorios, shutil.move.
+    Devuelve la ruta final."""
+    def exists_file(p: Path) -> bool:
+        try:
+            return os.path.isfile(str(p))
+        except OSError:
+            return False
+
+    def unique(base: Path) -> Path:
+        if not base.exists():
+            return base
+        counter = 1
+        cand = base.with_name(f"{base.stem}_{counter}{base.suffix}")
+        while cand.exists():
+            counter += 1
+            cand = base.with_name(f"{base.stem}_{counter}{base.suffix}")
+        return cand
+
+    if not exists_file(dst):
+        if not dst.is_dir():
+            try:
+                os.rename(str(src), str(dst))
+                return dst
+            except OSError:
+                pass
+        else:
+            dest = unique(dst / Path(str(src)).name)
+            shutil.move(str(src), str(dest))
+            return dest
+
+    final = unique(dst)
+    try:
+        os.link(str(src), str(final))
+        os.unlink(str(src))
+    except OSError:
+        shutil.copy2(str(src), str(final))
+        os.remove(str(src))
+    return final
+
+
+def sort_files(directory: Path, dry_run: bool = False, copy: bool = False, recursive: bool = False,
+               folder_mode: str = "ext"):
     """
     Ordena archivos en un directorio por su extensión.
     Crea una carpeta por extensión y mueve/copia los archivos.
+    Con folder_mode='human' agrupa en carpetas legibles (imagenes/,
+    documentos/, musica/, ...); con sufijos _1, _2 si hay colision de nombre.
     """
     if not directory.exists():
         raise DirectoryNotFoundError(str(directory))
@@ -459,21 +557,16 @@ def sort_files(directory: Path, dry_run: bool = False, copy: bool = False, recur
     for file_path in files:
         # Obtener extensión
         extension = file_path.suffix.lower()
-        if not extension:
-            ext_folder = "sin_extension"
-        else:
-            # Quitar el punto y usarlo como nombre de carpeta
-            ext_folder = extension[1:]  # ej: .txt -> txt
-        
-        # Crear carpeta destino: en modo recursivo se consolida todo en <raiz>/<ext>/
+        ext_folder = _folder_for(extension, folder_mode)
+
+        # Crear carpeta destino: en modo recursivo se consolida todo en <raiz>/<carpeta>/
         dest_folder = directory / ext_folder
-        dest_file = dest_folder / file_path.name
-        
-        # Evitar mover un archivo que ya esta en su carpeta de extension destino
+
+        # Evitar mover un archivo que ya esta en su carpeta destino
         if file_path.parent == dest_folder:
             continue
 
-        # En recursivo, saltar archivos que ya cuelgan de <raiz>/<ext>/ (ya consolidados
+        # En recursivo, saltar archivos que ya cuelgan de <raiz>/<carpeta>/ (ya consolidados
         # en una pasada anterior o de un 'ordenar' previo): evita re-mover y bucles.
         if recursive:
             try:
@@ -482,31 +575,23 @@ def sort_files(directory: Path, dry_run: bool = False, copy: bool = False, recur
             except ValueError:
                 pass
 
+        dest_file = _dest_for(file_path, dest_folder, folder_mode)
+        if not dry_run and not dest_file.parent.exists():
+            dest_folder.mkdir(parents=True, exist_ok=True)
 
         if dry_run:
             action = "Copiaría" if copy else "Movería"
             cprint(f"[DRY-RUN] {action}: {file_path} -> {dest_file}")
             continue
-        
-        # Crear directorio si no existe
-        dest_folder.mkdir(parents=True, exist_ok=True)
-        
-        # Manejar colisiones de nombre
-        counter = 1
-        original_dest = dest_file
-        while dest_file.exists():
-            stem = original_dest.stem
-            suffix = original_dest.suffix
-            dest_file = dest_folder / f"{stem}_{counter}{suffix}"
-            counter += 1
-        
+
         try:
             if copy:
                 shutil.copy2(file_path, dest_file)
                 cprint(f"Copiado: {file_path.name} -> {ext_folder}/")
             else:
-                shutil.move(str(file_path), str(dest_file))
+                final = _move_no_overwrite(file_path, dest_file)
                 cprint(f"Movido: {file_path.name} -> {ext_folder}/")
+                del final
             moved_count += 1
         except Exception as e:
             raise OperationError(f"{file_path}: {e}")
