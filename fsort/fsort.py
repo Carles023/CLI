@@ -209,6 +209,8 @@ def run_action(name: str, action: dict, args: list, dry_run: bool = False):
         raise ActionCommandMissingError(
             f"la acción '{name}' (tipo 'command') no define el campo 'command'")
 
+    plantilla = command
+
     placeholders = {int(n) for n in re.findall(r"\{(\d+)\}", command)}
     if placeholders and len(args) < max(placeholders):
         faltan = sorted(set(range(1, max(placeholders) + 1)) - set(range(1, len(args) + 1)))
@@ -221,19 +223,55 @@ def run_action(name: str, action: dict, args: list, dry_run: bool = False):
             f"{', '.join('{%d}' % p for p in sorted(placeholders))} "
             f"pero solo se recibieron {len(args)} argumento(s)")
 
-    # Sustituir {1}, {2}, ... por los argumentos del usuario
-    for i, arg in enumerate(args, 1):
-        command = command.replace(f"{{{i}}}", arg)
+    # Sustituir {1}, {2}, ... por los argumentos del usuario de forma segura:
+    # se tokeniza la plantilla y cada argumento entra como un unico token
+    # citado (shlex.quote), de modo que rutas con espacios o caracteres
+    # especiales (;, |, $, backticks...) no pueden inyectar ordenes de shell.
+    if os.name == "nt":
+        # En Windows se ejecuta con shell=True: cita al estilo cmd para
+        # evitar al menos el vector mas evidente (comas, & y pipes).
+        def _cita(a: str) -> str:
+            return '"' + a.replace('"', '""') + '"' if any(c in a for c in ' "&|<>^%') else a
+
+        for i, arg in enumerate(args, 1):
+            command = command.replace(f"{{{i}}}", _cita(arg))
+        argv = command
+    else:
+        try:
+            tokens = shlex.split(plantilla)
+        except ValueError as e:
+            raise InvalidArgumentError(
+                f"'{name}': la plantilla de la accion es un comando no válido ({e})")
+
+        argv = []
+        for tok in tokens:
+            if "{" not in tok:
+                argv.append(tok)
+                continue
+            partes = []
+            i = 0
+            while i < len(tok):
+                if tok[i] == "{":
+                    m = re.match(r"\{(\d+)\}", tok[i:])
+                    if m and 1 <= int(m.group(1)) <= len(args):
+                        partes.append(shlex.quote(args[int(m.group(1)) - 1]))
+                        i += m.end()
+                        continue
+                j = tok.find("{", i + 1)
+                fin = len(tok) if j == -1 else j
+                partes.append(shlex.quote(tok[i:fin]))
+                i = fin
+            argv.extend(shlex.split(" ".join(partes)))
+        command = " ".join(shlex.quote(a) for a in argv)
 
     if dry_run:
         cprint(f"[DRY-RUN] Ejecutaría: {command}")
         _dry_run_command(command, name=name, action_args=args)
         return
 
-    argv = shlex.split(command) if os.name != "nt" else command
     try:
         if os.name == "nt":
-            result = subprocess.run(command, shell=True)
+            result = subprocess.run(argv, shell=True)
         else:
             try:
                 result = subprocess.run(argv)

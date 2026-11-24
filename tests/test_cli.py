@@ -198,3 +198,63 @@ def test_ai_defaults_coinciden_con_config():
     cfg = fsort._ai_config()
     assert defaults["FSORT_AI_URL"] == f"`{cfg['base_url']}`"
     assert defaults["FSORT_AI_MODEL"] == f"`{cfg['model']}`"
+
+
+# --- sustitucion segura de marcadores (injeccion de shell) --------------------
+
+def _capture_run(monkeypatch):
+    vistos = {}
+
+    def fake_run(argv, **kw):
+        vistos["argv"] = argv
+
+        class R:
+            returncode = 0
+        return R()
+
+    monkeypatch.setattr(fsort.subprocess, "run", fake_run)
+    return vistos
+
+
+def test_injeccion_argumento_neutro(tmp_path, monkeypatch):
+    """Un argumento con ; rm -rf viaja como UN token: no se ejecuta como orden."""
+    vistos = _capture_run(monkeypatch)
+    monkeypatch.setattr(fsort.sys, "exit", lambda code=0: None)
+    acc = {"description": "d", "type": "command", "command": "echo {1}"}
+    veneno = "hola; rm -rf /"
+    fsort.run_action("x", acc, [veneno])
+    assert vistos["argv"] == ["echo", veneno]
+
+
+def test_comando_se_ejecuta_como_argv_no_shell(tmp_path, monkeypatch):
+    vistos = _capture_run(monkeypatch)
+    acc = {"description": "d", "type": "command", "command": "ls -lh {1}"}
+    monkeypatch.setattr(fsort.sys, "exit", lambda code=0: None)
+    fsort.run_action("info", acc, [str(tmp_path)])
+    assert vistos["argv"] == ["ls", "-lh", str(tmp_path)]
+
+
+def test_espacios_en_argumento_un_solo_token(tmp_path, monkeypatch):
+    vistos = _capture_run(monkeypatch)
+    d = tmp_path / "mi carpeta"
+    d.mkdir()
+    acc = {"description": "d", "type": "command", "command": "ls -lh {1}"}
+    monkeypatch.setattr(fsort.sys, "exit", lambda code=0: None)
+    fsort.run_action("info", acc, [str(d)])
+    assert vistos["argv"] == ["ls", "-lh", str(d)]
+
+
+def test_dry_run_muestra_shlex_quote(tmp_path, capsys):
+    acc = {"description": "d", "type": "command", "command": "ls {1}"}
+    fsort.run_action("info", acc, ["/ruta con espacios"], dry_run=True)
+    out = capsys.readouterr().out
+    assert "'/ruta con espacios'" in out
+    assert "rm" not in out
+
+
+def test_prefijo_adjunto_se_mantiene_un_token(tmp_path, monkeypatch):
+    vistos = _capture_run(monkeypatch)
+    acc = {"description": "d", "type": "command", "command": "du -sh {1}"}
+    monkeypatch.setattr(fsort.sys, "exit", lambda code=0: None)
+    fsort.run_action("tamano", acc, ["dir;evil"])
+    assert vistos["argv"] == ["du", "-sh", "dir;evil"]
