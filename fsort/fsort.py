@@ -10,8 +10,10 @@ import shutil
 import ssl
 import subprocess
 import sys
+import tarfile
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 
 _IMPORT_ERRS = {
@@ -445,6 +447,13 @@ def run_python_action(name: str, action: dict, args: list, dry_run: bool = False
         if func is aged_files:
             kwargs["assume_yes"] = (os.environ.get("FSORT_YES") == "1")
         func(directory, **kwargs)
+    elif func is extract_archive:
+        if not args:
+            raise InvalidArgumentError(
+                f"'{name}': falta el archivo (fsort.py {name} <archivo> [destino])")
+        archivo = Path(args[0]).expanduser()
+        destino = Path(args[1]).expanduser() if len(args) > 1 else None
+        func(archivo, destino, **kwargs)
     elif func is undo_clean:
         trash_arg = Path(args[0]).expanduser() if args else None
         kwargs["assume_yes"] = (os.environ.get("FSORT_YES") == "1")
@@ -1679,6 +1688,174 @@ def dir_report(directory: Path, dry_run: bool = False, top: int = 10):
     cprint()
 
 
+ARCHIVE_SUFFIXES = (".zip", ".rar", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2",
+                    ".tar.xz", ".txz", ".gz", ".bz2", ".xz")
+
+
+def _unpack_members(archivo: Path):
+    """Clasifica un archivo comprimido y lista sus miembros como (nombre, es_dir),
+    o None si no es un formato reconocible. Para .gz/.bz2/.xz sueltos devuelve
+    ([('nombre-descomprimido', False)], tipo='gzip'). Rechaza miembros con rutas
+    absolutas o travesias '..' (proteccion anti zip-slip).
+
+    Devuelve (miembros, tipo) con tipo en {'zip', 'tar', 'gz'} o None.
+    """
+    nombre = archivo.name.lower()
+
+    if nombre.endswith(".zip") or zipfile.is_zipfile(str(archivo)):
+        try:
+            with zipfile.ZipFile(str(archivo)) as zf:
+                membros = [(info.filename, info.is_dir()) for info in zf.infolist()]
+        except (zipfile.BadZipFile, OSError):
+            raise FileReadError(f"{archivo}: no es un ZIP válido")
+        tipo = "zip"
+    elif tarfile.is_tarfile(str(archivo)):
+        try:
+            with tarfile.open(str(archivo)) as tf:
+                membros = [(m.name, m.isdir()) for m in tf.getmembers()]
+        except tarfile.TarError as e:
+            raise FileReadError(f"{archivo}: no es un TAR válido ({e})")
+        tipo = "tar"
+    else:
+        import gzip as _gzip
+        import bz2 as _bz2
+        import lzma as _lzma
+        abierto = None
+        try:
+            with open(archivo, "rb") as f:
+                magic = f.read(6)
+            if magic[:2] == b"\x1f\x8b":
+                with _gzip.open(str(archivo), "rb") as abierto:
+                    abierto.read(1)
+                tipo = "gz"
+            elif magic[:3] == b"BZh":
+                with _bz2.open(str(archivo), "rb") as abierto:
+                    abierto.read(1)
+                tipo = "gz"
+            elif magic[:6] == b"\xfd7zXZ\x00":
+                with _lzma.open(str(archivo), "rb") as abierto:
+                    abierto.read(1)
+                tipo = "gz"
+            else:
+                return None
+        except OSError:
+            return None
+        except Exception:
+            return None
+        stem = nombre
+        for s in (".gz", ".bz2", ".xz"):
+            if stem.endswith(s):
+                stem = stem[:-len(s)]
+                break
+        membros = [(stem or "contenido", False)]
+    if membros is None:
+        return None
+
+    # Validacion de seguridad: sin rutas absolutas ni escapes '..'
+    for nombre_member, _ in membros:
+        n = nombre_member.replace("\\", "/")
+        if n.startswith("/") or (os.path.isabs(n) and not n.startswith("//")):
+            raise OperationError(f"{archivo}: miembro con ruta absoluta '{nombre_member}' "
+                                 "(posible zip-slip); extraccion abortada")
+        partes = [p for p in n.split("/") if p not in ("", ".")]
+        if ".." in partes:
+            raise OperationError(f"{archivo}: miembro que escapa del destino "
+                                 f"('{nombre_member}'); extraccion abortada")
+    return (membros, tipo)
+
+
+def _destino_unico(dest: Path) -> Path:
+    """evita pisar: si destino existe, anade _1, _2..."""
+    if not dest.exists():
+        return dest
+    counter = 1
+    cand = dest.with_name(f"{dest.name}_{counter}")
+    while cand.exists():
+        counter += 1
+        cand = dest.with_name(f"{dest.name}_{counter}")
+    return cand
+
+
+def extract_archive(archivo: Path, destino: Path = None, dry_run: bool = False):
+    """
+    Extrae un archivo comprimido (.zip, .tar y variantes .gz/.bz2/.xz, .tgz,
+    .txz, y .gz/.bz2/.xz sueltos) a <destino> (por defecto una subcarpeta junto
+    al original con el nombre del archivo, sin extension). Nunca sobrescribe:
+    si el destino existe se crea <destino>_1. Rechaza archivos ZIP/TAR con
+    rutas maliciosas (zip-slip). .rar requiere herramienta externa.
+    """
+    if archivo is None:
+        raise InvalidArgumentError("falta el archivo (fsort.py descomprimir-a <archivo> [destino])")
+    path = Path(archivo).expanduser()
+    if not path.exists():
+        raise FileReadError(f"{path} no existe")
+    if not path.is_file():
+        raise InvalidArgumentError(f"{path} no es un archivo")
+
+    es_rar = path.name.lower().endswith(".rar")
+
+    resu = None if es_rar else _unpack_members(path)
+    if resu is None:
+        if es_rar:
+            raise UnsupportedFileFormatError(
+                f"{path.name}: el formato .rar no está soportado de forma nativa. "
+                "Conviértelo a .zip/.tar o usa una herramienta externa.")
+        raise UnsupportedFileFormatError(
+            f"{path.name}: formato no reconocido. Compatibles: .zip, .tar, .tar.gz/.tgz, "
+            ".tar.bz2/.tbz2, .tar.xz/.txz y .gz/.bz2/.xz sueltos.")
+    membros, tipo = resu
+
+    if destino is None:
+        stem = path.name
+        for s in (".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".tbz2", ".txz",
+                  ".zip", ".tar", ".gz", ".bz2", ".xz"):
+            if stem.lower().endswith(s):
+                stem = stem[:-len(s)]
+                break
+        destino = path.with_name(stem)
+    dest = Path(destino).expanduser()
+
+    if dry_run:
+        dirs = sum(1 for _, d in membros if d)
+        ficheros = len(membros) - dirs
+        cprint(f"[DRY-RUN] Extraería {len(membros)} miembro(s) de {path.name} "
+              f"({ficheros} archivo(s), {dirs} carpeta(s)) en {dest}. "
+              "Usa sin --dry-run para extraer.")
+        return
+
+    final = _destino_unico(dest)
+    final.mkdir(parents=True, exist_ok=True)
+
+    try:
+        if tipo == "zip":
+            with zipfile.ZipFile(str(path)) as zf:
+                zf.extractall(str(final))
+        elif tipo == "tar":
+            with tarfile.open(str(path)) as tf:
+                try:
+                    tf.extractall(str(final), filter="data")
+                except TypeError:  # Python < 3.12 sin filter
+                    tf.extractall(str(final))
+        else:  # gz/bz2/xz sueltos: un unico archivo descomprimido
+            import gzip as _gzip
+            import bz2 as _bz2
+            import lzma as _lzma
+            sueltos = {"gz": _gzip.open, "bz2": _bz2.open, "xz": _lzma.open}
+            modo = _gzip.open
+            for s, op in ((".gz", _gzip.open), (".bz2", _bz2.open), (".xz", _lzma.open)):
+                if path.name.lower().endswith(s):
+                    modo = op
+                    break
+            miembro = membros[0][0]
+            out = final / miembro
+            with modo(str(path), "rb") as f_in, open(out, "wb") as f_out:
+                shutil.copyfileobj(f_in, f_out)
+    except (zipfile.BadZipFile, tarfile.TarError, OSError) as e:
+        raise OperationError(f"no se pudo extraer {path.name}: {e}")
+
+    cprint(f"✓ Extraído {path.name} en {final}/ ({len(membros)} miembro(s)).")
+
+
 def empty_trash(directory: Path = None, dry_run: bool = False,
                 top: int = 0, delete: bool = False, ext: str = "*"):
     """
@@ -1944,7 +2121,7 @@ Ejemplos:
   %(prog)s <comando> [args...]   # Ejecuta un comando de actions.json
   %(prog)s ordenar ~/Descargas   # Ordena archivos por extensión
   %(prog)s info ~/Descargas      # Lista el directorio
-  %(prog)s pdf-a-odt a.pdf ./out # Convierte PDF a ODT
+  %(prog)s descomprimir-a a.zip ./out # Extrae el ZIP en ./out
   %(prog)s --actions             # Lista los comandos disponibles
   %(prog)s ordenar . --dry-run   # Simula sin aplicar cambios
   %(prog)s --ai "¿Cómo ordeno mis descargas?"  # Pregunta a la IA de Simarro
@@ -2071,6 +2248,8 @@ def dispatch(args, extra: list, actions: dict):
             example = f"fsort.py {command} [papelera]"
         elif action.get("func") == "summarize_file":
             example = f"fsort.py {command} <archivo> [destino.txt]"
+        elif action.get("func") == "extract_archive":
+            example = f"fsort.py {command} <archivo> [destino]"
         elif action.get("func") == "undo_clean":
             example = f"fsort.py {command} [--dry-run | --yes]"
         else:

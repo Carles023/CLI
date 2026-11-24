@@ -1,4 +1,5 @@
 """Tests de la logica de archivos de fsort (ordenar, vaciar, mover, duplicados, papelera)."""
+import shutil
 import sys
 from pathlib import Path
 
@@ -647,3 +648,110 @@ def test_cli_por_edad_args(tmp_path, monkeypatch, capsys):
     fsort.run_python_action("por-edad", acc, [str(tmp_path), "365"])
     assert not (tmp_path / "viejo1.txt").exists()
     assert (tmp_path / "medio.pdf").exists()
+
+
+# --- descomprimir-a -----------------------------------------------------------
+
+import zipfile as _zip
+import tarfile as _tar
+import gzip as _gzip
+
+
+def _mk_archivos(d: Path):
+    d.mkdir(parents=True, exist_ok=True)
+    with _zip.ZipFile(d / "foto.zip", "w") as z:
+        z.writestr("a.txt", "hola")
+        z.writestr("sub/b.md", "mundo")
+    with _tar.open(d / "pandas.tar.gz", "w:gz") as t:
+        (d / "x.txt").write_text("uno")
+        (d / "y.log").write_text("dos")
+        t.add(d / "x.txt", arcname="x.txt")
+        t.add(d / "y.log", arcname="y.log")
+        (d / "x.txt").unlink()
+        (d / "y.log").unlink()
+    with _gzip.open(d / "solo.txt.gz", "wb") as g:
+        g.write(b"contenido gz")
+    with _zip.ZipFile(d / "malvado.zip", "w") as z:
+        z.writestr("../ESCAPADO.txt", "mal")
+    with _zip.ZipFile(d / "absoluto.zip", "w") as z:
+        z.writestr("/etc/ESCAPADO.txt", "mal")
+    (d / "fake.zip").write_text("no soy un zip")
+    shutil.copy2(d / "foto.zip", d / "x.rar")
+
+
+def test_extract_zip(tmp_path):
+    _mk_archivos(tmp_path)
+    fsort.extract_archive(tmp_path / "foto.zip", tmp_path / "z1")
+    assert (tmp_path / "z1" / "a.txt").read_text() == "hola"
+    assert (tmp_path / "z1" / "sub" / "b.md").read_text() == "mundo"
+
+
+def test_extract_tar_gz(tmp_path):
+    _mk_archivos(tmp_path)
+    fsort.extract_archive(tmp_path / "pandas.tar.gz")
+    assert (tmp_path / "pandas" / "x.txt").exists()
+    assert (tmp_path / "pandas" / "y.log").exists()
+
+
+def test_extract_gz_sueltos(tmp_path):
+    _mk_archivos(tmp_path)
+    fsort.extract_archive(tmp_path / "solo.txt.gz")
+    assert (tmp_path / "solo.txt" / "solo.txt").read_text() == "contenido gz"
+
+
+def test_extract_no_sobrescribe(tmp_path):
+    _mk_archivos(tmp_path)
+    fsort.extract_archive(tmp_path / "foto.zip", tmp_path / "z1")
+    fsort.extract_archive(tmp_path / "foto.zip", tmp_path / "z1")
+    assert (tmp_path / "z1_1" / "a.txt").exists()
+
+
+def test_extract_dry_run(tmp_path, capsys):
+    _mk_archivos(tmp_path)
+    fsort.extract_archive(tmp_path / "foto.zip", tmp_path / "z1", dry_run=True)
+    out = capsys.readouterr().out
+    assert "DRY-RUN" in out
+    assert not (tmp_path / "z1").exists()
+
+
+def test_extract_zip_slip_rechazado(tmp_path):
+    from fsort.errores import OperationError
+    _mk_archivos(tmp_path)
+    with pytest.raises(OperationError):
+        fsort.extract_archive(tmp_path / "malvado.zip", tmp_path / "z1")
+    assert not (tmp_path.parent / "ESCAPADO.txt").exists()
+    assert not (tmp_path / "z1" / "ESCAPADO.txt").exists()
+
+
+def test_extract_ruta_absoluta_rechazada(tmp_path):
+    from fsort.errores import OperationError
+    _mk_archivos(tmp_path)
+    with pytest.raises(OperationError):
+        fsort.extract_archive(tmp_path / "absoluto.zip", tmp_path / "z1")
+    assert not (tmp_path / "z1" / "etc").exists()
+
+
+def test_extract_zip_invalido(tmp_path):
+    from fsort.errores import FileReadError
+    _mk_archivos(tmp_path)
+    with pytest.raises(FileReadError):
+        fsort.extract_archive(tmp_path / "fake.zip", tmp_path / "z1")
+
+
+def test_extract_rar_no_soportado(tmp_path):
+    from fsort.errores import UnsupportedFileFormatError
+    _mk_archivos(tmp_path)
+    with pytest.raises(UnsupportedFileFormatError):
+        fsort.extract_archive(tmp_path / "x.rar", tmp_path / "z1")
+
+
+def test_extract_inexistente(tmp_path):
+    from fsort.errores import FileReadError
+    with pytest.raises(FileReadError):
+        fsort.extract_archive(tmp_path / "nada.zip")
+
+
+def test_accion_descomprimir_registered():
+    from fsort import config
+    actions = config.load_and_validate()
+    assert actions["descomprimir-a"]["func"] == "extract_archive"

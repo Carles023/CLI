@@ -29,6 +29,7 @@ AI_SYSTEM_PROMPT = (
     "    por-edad-eliminar <dir> [días] (borra sin papelera)\n"
     "  vaciar-papelera [papelera], vaciar-papelera-ya [papelera]\n"
     "  resumir <archivo> [destino.txt]\n"
+    "  descomprimir-a <archivo> [destino]  (.zip/.tar/.tgz/...; rechaza zip-slip)\n"
     "  info <dir>, tamano <dir>, limpiar <dir>, limpiar-auto <dir>\n"
     "  reporte <dir> [N]  (resumen: tamaño, extensiones, duplicados, temporales)\n"
     "  deshacer-limpieza  (devuelve los archivos de la última 'limpiar')\n"

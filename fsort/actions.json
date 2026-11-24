@@ -152,6 +152,12 @@
       "func": "summarize_file",
       "kwargs": {}
     },
+    "descomprimir-a": {
+      "description": "Extrae un archivo (.zip, .tar, .tar.gz/.tgz, .tar.bz2, .tar.xz, .gz, .bz2, .xz) en <destino> o en una subcarpeta junto al original. Verifica integridad y rechaza rutas maliciosas (zip-slip); nunca sobrescribe (crea <destino>_1 si existe). Uso: descomprimir-a <archivo> [destino]. --dry-run lista los miembros",
+      "type": "python",
+      "func": "extract_archive",
+      "kwargs": {}
+    },
     "ai": {
       "description": "Consulta la IA de Simarro. Pasa la pregunta como argumento (o usa --ai). Requiere FSORT_AI_KEY",
       "type": "ai"
