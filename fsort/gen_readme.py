@@ -45,6 +45,12 @@ def build_table(actions: dict) -> str:
             usage += " [papelera]"
         elif action.get("func") == "undo_clean":
             usage += "  # sin argumentos (--dry-run / --yes)"
+        elif action.get("func") == "dir_snapshot":
+            usage += " <directorio> [nombre]"
+        elif action.get("func") == "snapshot_diff":
+            usage += " <directorio> [nombre] [--latest]"
+        elif action.get("func") == "snapshot_list":
+            usage += " [directorio]"
         elif name == "resumir":
             usage += " <archivo> [destino.txt]"
         elif action.get("type") == "ai":

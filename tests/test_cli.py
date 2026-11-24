@@ -1,5 +1,6 @@
 """Tests del CLI (main/run_action) y de utilidades de red/confirmacion."""
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -258,3 +259,25 @@ def test_prefijo_adjunto_se_mantiene_un_token(tmp_path, monkeypatch):
     monkeypatch.setattr(fsort.sys, "exit", lambda code=0: None)
     fsort.run_action("tamano", acc, ["dir;evil"])
     assert vistos["argv"] == ["du", "-sh", "dir;evil"]
+
+
+# --- snapshot/diff (extremo a extremo, sin IA) -----------------------------------
+
+def test_script_snapshot_y_diff(tmp_path):
+    (tmp_path / "a.txt").write_text("x")
+    snap_dir = tmp_path.parent / (tmp_path.name + "_snap")
+    env = {**os.environ, "FSORT_SNAPSHOT_DIR": str(snap_dir)}
+    r = _run(["snapshot", str(tmp_path)], env=env)
+    assert r.returncode == 0
+    assert "Instantanea guardada" in r.stdout
+    (tmp_path / "a.txt").write_text("y")
+    r = _run(["diff", str(tmp_path)], env=env)
+    assert r.returncode == 0
+    assert "~ Modificado: a.txt" in r.stdout
+
+
+def test_script_snapshot_list_vacia(tmp_path):
+    env = {**os.environ, "FSORT_SNAPSHOT_DIR": str(tmp_path / "snaps")}
+    r = _run(["snapshot-list"], env=env)
+    assert r.returncode == 0
+    assert "No hay instantaneas" in r.stdout

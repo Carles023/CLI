@@ -14,6 +14,7 @@ import tarfile
 import urllib.error
 import urllib.request
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 _IMPORT_ERRS = {
@@ -473,6 +474,20 @@ def run_python_action(name: str, action: dict, args: list, dry_run: bool = False
         trash_arg = Path(args[0]).expanduser() if args else None
         kwargs["assume_yes"] = (os.environ.get("FSORT_YES") == "1")
         func(trash_arg, **kwargs)
+    elif func in (dir_snapshot, snapshot_diff):
+        if not args:
+            raise InvalidArgumentError(
+                f"'{name}': falta el directorio "
+                f"(fsort.py {name} <directorio> [nombre])")
+        directory = _checked_dir(args[0], name)
+        if len(args) > 1:
+            kwargs["name"] = args[1]
+        if func is snapshot_diff:
+            kwargs["latest"] = ("--latest" in args[2:] or "-L" in args[2:])
+        func(directory, **kwargs)
+    elif func is snapshot_list:
+        directory = _checked_dir(args[0], name) if args else None
+        func(directory, **kwargs)
     elif func is clean_temp:
         if not args:
             raise InvalidArgumentError(
@@ -2356,6 +2371,308 @@ def empty_trash(directory: Path = None, dry_run: bool = False,
             cprint(f"Papelera vaciada: {count} elemento(s) eliminados. Liberado: {_human_size(freed)}.")
 
 
+SNAPSHOT_DATE_FMT = "%Y%m%d-%H%M%S"
+
+
+def _snapshot_root() -> Path:
+    """Carpeta raiz de las instantaneas (FSORT_SNAPSHOT_DIR o ~/.fsort/snapshots)."""
+    if os.environ.get("FSORT_SNAPSHOT_DIR"):
+        return Path(os.environ["FSORT_SNAPSHOT_DIR"]).expanduser()
+    return Path.home() / ".fsort" / "snapshots"
+
+
+def _snapshot_slug(directory: Path) -> str:
+    """Nombre base del archivo de instantanea a partir del directorio."""
+    slug = re.sub(r"[^\w.-]+", "_", directory.resolve().name).strip("._")
+    return slug or "directorio"
+
+
+def _snapshot_files_of(dir_json: Path) -> list:
+    """Rutas .json de instantaneas de un directorio (excluye backups _1, _2...)."""
+    return sorted(p for p in dir_json.glob("*.json")
+                  if not re.search(r"_\d+$", p.stem))
+
+
+def _resolve_snapshot_files(directory: Path, name: str = None) -> list:
+    """Lista de archivos-json de instantaneas del directorio (o del nombre indicado).
+
+    Con 'name' puede ser un slug (busqueda exacta) o una ruta .json directa.
+    Sin 'name' devuelve todas las del directorio ordenadas por fecha (la ultima
+    es la mas reciente, porque el prefijo temporal es ordenable).
+    """
+    if name:
+        if name.endswith(".json") and os.path.isfile(name):
+            return [Path(name)]
+        slug = _snapshot_slug(directory)
+        exact = _snapshot_files_of(_snapshot_root() / slug / name)
+        if exact:
+            return exact
+        files = _snapshot_files_of(_snapshot_root() / slug)
+        por_nombre = [p for p in files if p.stem == name
+                      or p.stem.startswith(f"{name}-")]
+        if por_nombre:
+            return por_nombre
+        raise InvalidArgumentError(
+            f"no hay instantanea '{name}' para {directory} "
+            "(usa 'snapshot-list' para ver las disponibles)")
+    files = _snapshot_files_of(_snapshot_root() / _snapshot_slug(directory))
+    if not files:
+        raise InvalidArgumentError(
+            f"no hay instantaneas para {directory} "
+            "(crea una con 'fsort.py snapshot <directorio>')")
+    return files
+
+
+def _load_snapshot(path: Path) -> dict:
+    try:
+        with open(path, encoding="utf-8") as f:
+            snap = jsonlib.load(f)
+    except FileNotFoundError:
+        raise FileReadError(str(path))
+    except json.JSONDecodeError as e:
+        raise FileReadError(f"{path} (línea {e.lineno}, columna {e.colno}): {e.msg}")
+    if not isinstance(snap, dict) or "files" not in snap:
+        raise FileReadError(f"{path}: no es una instantanea valida")
+    return snap
+
+
+def _inventory_directory(directory: Path, hash_max_mb: float = 25.0) -> dict:
+    """Inventario del directorio (recursivo): ruta relativa -> {size, mtime, sha256}.
+
+    Solo hashea archivos de hasta 'hash_max_mb' MB (los grandes se comparan por
+    tamano+mtime); omite symlinks y errores de lectura, y excluye el arbol de
+    instantaneas si cae dentro del directorio inventoryado.
+    """
+    files = {}
+    snap_root = _snapshot_root()
+    for f in sorted(directory.rglob("*"), key=lambda p: str(p)):
+        try:
+            if f.is_symlink() or not f.is_file():
+                continue
+            if f.resolve() == snap_root or snap_root in f.parents:
+                continue
+            st = f.stat()
+        except OSError:
+            continue
+        entry = {"size": st.st_size, "mtime": int(st.st_mtime)}
+        if st.st_size <= int(hash_max_mb * 1024 * 1024):
+            digest = _sha256(f)
+            if digest:
+                entry["sha256"] = digest
+        files[f.relative_to(directory).as_posix()] = entry
+    return files
+
+
+def dir_snapshot(directory: Path, dry_run: bool = False, name: str = None,
+                 label: str = ""):
+    """Guarda una instantanea (inventario con hash) del directorio en ~/.fsort/snapshots.
+
+    Nombre generado: <slug>-<YYYYmmdd-HHMMSS>.json dentro de la carpeta del
+    directorio; se conserva el ultimo SNAPSHOT_KEEP (por defecto 20; 0 = todos).
+    """
+    if not directory.exists():
+        raise DirectoryNotFoundError(str(directory))
+    if not directory.is_dir():
+        raise NotADirectoryError_(str(directory))
+
+    try:
+        keep = int(os.environ.get("SNAPSHOT_KEEP", "20"))
+    except ValueError:
+        keep = 20
+
+    if dry_run:
+        n = sum(1 for _ in directory.rglob("*"))
+        cprint(f"[DRY-RUN] Crearía una instantánea de {directory} "
+               f"(~{n} elemento(s)) en {_snapshot_root() / _snapshot_slug(directory)}. "
+               "No se ha guardado nada.")
+        return
+
+    files = _inventory_directory(directory)
+    now = datetime.now()
+    stamp = now.strftime(SNAPSHOT_DATE_FMT)
+    base = name or _snapshot_slug(directory)
+    dir_json = _snapshot_root() / _snapshot_slug(directory)
+    try:
+        dir_json.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise OperationError(f"{dir_json}: {e}")
+
+    path = dir_json / f"{base}-{stamp}.json"
+    counter = 1
+    while path.exists():
+        path = dir_json / f"{base}-{stamp}_{counter}.json"
+        counter += 1
+    record = {
+        "version": 1,
+        "dir": str(directory.resolve()),
+        "created": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "label": label or "",
+        "count": len(files),
+        "files": files,
+    }
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            jsonlib.dump(record, f, ensure_ascii=False, indent=1)
+    except OSError as e:
+        raise OperationError(f"{path}: {e}")
+
+    cprint(f"Instantanea guardada: {path} "
+           f"({len(files)} archivo(s), {_human_size(path.stat().st_size)}).")
+
+    if keep > 0:
+        olds = _snapshot_files_of(dir_json)[:-keep]
+        for old in olds:
+            try:
+                old.unlink()
+                cprint(f"  Antigua purgada: {old.name}")
+            except OSError:
+                pass
+
+
+def _match_name_any(name: str, patterns: list) -> bool:
+    """True si el nombre encaja con algun patron _match_name (lista de extensiones)."""
+    return any(_match_name(name, p) for p in patterns)
+
+
+def _diff_snapshots(old: dict, new: dict, ext_filter: str = "*"):
+    """Calcula creados/borrados/modificados/renombrados entre dos inventarios."""
+    old_f, new_f = old["files"], new["files"]
+    comunes = old_f.keys() & new_f.keys()
+    creados = sorted(new_f.keys() - old_f.keys())
+    borrados = sorted(old_f.keys() - new_f.keys())
+
+    modificados = []
+    for rel in sorted(comunes):
+        o, n = old_f[rel], new_f[rel]
+        if o["size"] != n["size"] or o.get("sha256") != n.get("sha256"):
+            modificados.append(rel)
+
+    # Renombrados/movidos: mismo hash (tamano+hash si no se hahea) en rutas distintas
+    moved_pairs = []
+    if borrados and creados:
+        def key(e):
+            return (e.get("sha256") or ("", e["size"]), e["size"])
+        by_hash_old = {}
+        for rel in borrados:
+            by_hash_old.setdefault(key(old_f[rel]), []).append(rel)
+        asignados = set()
+        for rel in creados:
+            grupo = by_hash_old.get(key(new_f[rel]))
+            if not grupo:
+                continue
+            src = next((r for r in grupo if r not in asignados), None)
+            if src is None:
+                continue
+            asignados.add(src)
+            moved_pairs.append((src, rel))
+        borrados = [r for r in borrados if r not in asignados]
+        creados = [r for r in creados if r not in set(m for _, m in moved_pairs)]
+
+    if ext_filter != "*":
+        modificados = [r for r in modificados if _match_name_any(Path(r).name, [ext_filter])]
+        creados = [r for r in creados if _match_name_any(Path(r).name, [ext_filter])]
+        borrados = [r for r in borrados if _match_name_any(Path(r).name, [ext_filter])]
+        moved_pairs = [(a, b) for a, b in moved_pairs
+                       if _match_name_any(Path(b).name, [ext_filter])]
+
+    moved_pairs.sort(key=lambda p: p[0])
+    return {"created": creados, "deleted": borrados, "modified": modificados,
+            "moved": moved_pairs,
+            "unchanged": len(comunes) - len(modificados)}
+
+
+def snapshot_diff(directory: Path, name: str = None, dry_run: bool = False,
+                  ext: str = "*", latest: bool = False):
+    """Compara el directorio actual con una instantanea (la ultima por defecto).
+
+    Con 'latest=True' compara las dos ultimas instantaneas guardadas.
+    Detecta creados/borrados/modificados y renombrados-movidos (por hash).
+    Solo lectura: no modifica archivos. Con --dry-run solo muestra el resumen.
+    """
+    if not directory.exists():
+        raise DirectoryNotFoundError(str(directory))
+    if not directory.is_dir():
+        raise NotADirectoryError_(str(directory))
+
+    files = _resolve_snapshot_files(directory, None if latest else name)
+    if latest:
+        files = _snapshot_files_of(_snapshot_root() / _snapshot_slug(directory))
+        if len(files) < 2:
+            raise InvalidArgumentError(
+                f"hay {len(files)} instantanea(s) de {directory}; se necesitan al menos 2 "
+                "para comparar (crea otra con 'snapshot')")
+        old_snap = _load_snapshot(files[-2])
+        new_snap = _load_snapshot(files[-1])
+        cprint(f"Compara instantáneas de {directory}: "
+               f"{files[-2].stem} -> {files[-1].stem}")
+    else:
+        old_snap = _load_snapshot(files[-1])
+        new_snap = {"files": _inventory_directory(directory)}
+        cprint(f"Directorio {directory} vs instantánea {files[-1].name} "
+               f"({old_snap.get('created', 'sin fecha')}):")
+
+    d = _diff_snapshots(old_snap, new_snap, ext_filter=ext)
+    for rel in d["created"]:
+        cprint(f"  + Añadido: {rel}")
+    for rel in d["modified"]:
+        cprint(f"  ~ Modificado: {rel}")
+    for rel in d["deleted"]:
+        cprint(f"  - Eliminado: {rel}")
+    for src, dst in d["moved"]:
+        cprint(f"  > Movido/renombrado: {src} -> {dst}")
+
+    partes = [f"+{len(d['created'])}", f"~{len(d['modified'])}",
+              f"-{len(d['deleted'])}",
+              f">{len(d['moved'])} movido(s)", f"={d['unchanged']} sin cambios"]
+    if any(parte not in ("+0", "~0", "-0") for parte in partes[:3]) or d["moved"]:
+        cprint(f"\nResumen: {'; '.join(partes)}.")
+    else:
+        cprint("\nSin cambios desde la instantánea.")
+    if dry_run:
+        cprint("[DRY-RUN] Solo lectura: no se ha modificado nada.")
+
+
+def snapshot_list(directory: Path = None, dry_run: bool = False):
+    """Lista las instantaneas guardadas (todas los directorios o las de uno)."""
+    root = _snapshot_root()
+    if not root.exists():
+        cprint(f"No hay instantaneas (carpeta {root} vacia o inexistente). "
+               "Crea la primera con 'snapshot <directorio>'.")
+        return
+
+    if directory:
+        dirs = [_snapshot_slug(directory)]
+    else:
+        dirs = sorted(p.name for p in root.iterdir() if p.is_dir())
+
+    total = 0
+    for slug in dirs:
+        dir_json = root / slug
+        files = _snapshot_files_of(dir_json)
+        if not files:
+            continue
+        first = _load_snapshot(files[0]).get("dir", slug)
+        cprint(f"{first} ({len(files)} instantanea(s)):")
+        for p in files:
+            try:
+                snap = _load_snapshot(p)
+            except FsortError:
+                cprint(f"  - {p.name}  (ilegible)")
+                continue
+            extra = f" — {snap['label']}" if snap.get("label") else ""
+            cprint(f"  - {p.name}  {snap.get('created', '?')}  "
+                   f"({snap.get('count', '?')} archivo(s), "
+                   f"{_human_size(p.stat().st_size)}){extra}")
+            total += 1
+    if not total:
+        where = f" para {directory}" if directory else ""
+        cprint(f"No hay instantaneas{where}. Crea alguna con 'snapshot <directorio>'.")
+        return
+    cprint()
+    cprint(f"{total} instantanea(s) en {root}. Usa 'diff <directorio> [nombre]' "
+           "para comparar (sin nombre, contra la ultima).")
+
+
 def _extract_actions_file(argv: list):
     """Extrae el valor de --actions-file de argv sin usar argparse (argparse lo confundiría con --actions)."""
     path = None
@@ -2644,6 +2961,12 @@ def dispatch(args, extra: list, actions: dict):
             example = f"fsort.py {command} <archivo> [destino]"
         elif action.get("func") == "undo_clean":
             example = f"fsort.py {command} [--dry-run | --yes]"
+        elif action.get("func") == "dir_snapshot":
+            example = f"fsort.py {command} <directorio> [nombre]"
+        elif action.get("func") == "snapshot_diff":
+            example = f"fsort.py {command} <directorio> [nombre] [--latest]"
+        elif action.get("func") == "snapshot_list":
+            example = f"fsort.py {command} [directorio]"
         else:
             example = f"fsort.py {command} <directorio>"
     elif action_type == "command":

@@ -954,3 +954,163 @@ def test_accion_hardlink_registered():
     from fsort import config
     actions = config.load_and_validate()
     assert actions["duplicados-hardlink"]["func"] == "dedup_hardlink"
+
+
+# --- instantaneas (snapshot / diff / snapshot-list) -----------------------------
+
+@pytest.fixture
+def snap_root(tmp_path, monkeypatch):
+    root = tmp_path / "_snapshots"
+    monkeypatch.setenv("FSORT_SNAPSHOT_DIR", str(root))
+    return root
+
+
+def _snap(d: Path, name: str = None):
+    """Crea una instantanea y devuelve la ruta del json generado."""
+    root = fsort._snapshot_root()
+    before = {p.name for p in (root / fsort._snapshot_slug(d)).glob("*.json")} \
+        if (root / fsort._snapshot_slug(d)).exists() else set()
+    fsort.dir_snapshot(d, name=name)
+    nuevos = {p for p in (root / fsort._snapshot_slug(d)).glob("*.json")
+              if p.name not in before}
+    assert len(nuevos) == 1
+    return nuevos.pop()
+
+
+def test_snapshot_guarda_inventario(tmp_path, snap_root):
+    touch(tmp_path / "a.txt", "uno")
+    touch(tmp_path / "sub" / "b.md", "dos")
+    path = _snap(tmp_path)
+    assert path.exists()
+    assert snap_root / fsort._snapshot_slug(tmp_path) in path.parents
+    snap = fsort._load_snapshot(path)
+    assert set(snap["files"]) == {"a.txt", "sub/b.md"}
+    assert snap["files"]["a.txt"]["size"] == len("uno")
+    assert len(snap["files"]["a.txt"]["sha256"]) == 64
+
+
+def test_snapshot_dry_run_no_guarda(tmp_path, snap_root, capsys):
+    touch(tmp_path / "a.txt")
+    fsort.dir_snapshot(tmp_path, dry_run=True)
+    assert "[DRY-RUN]" in capsys.readouterr().out
+    assert not snap_root.exists()
+
+
+def test_snapshot_directorio_inexistente(tmp_path, snap_root):
+    with pytest.raises(DirectoryNotFoundError):
+        fsort.dir_snapshot(tmp_path / "no-existe")
+
+
+def test_diff_detecta_creados_modificados_borrados(tmp_path, snap_root, capsys):
+    touch(tmp_path / "a.txt", "uno")
+    touch(tmp_path / "b.log", "dos")
+    _snap(tmp_path)
+    touch(tmp_path / "c.txt", "tres")
+    (tmp_path / "a.txt").write_text("cambiado", encoding="utf-8")
+    (tmp_path / "b.log").unlink()
+    fsort.snapshot_diff(tmp_path)
+    out = capsys.readouterr().out
+    assert "+ Añadido: c.txt" in out
+    assert "~ Modificado: a.txt" in out
+    assert "- Eliminado: b.log" in out
+    assert "Resumen:" in out
+
+
+def test_diff_sin_cambios(tmp_path, snap_root, capsys):
+    touch(tmp_path / "a.txt")
+    _snap(tmp_path)
+    fsort.snapshot_diff(tmp_path)
+    assert "Sin cambios" in capsys.readouterr().out
+
+
+def test_diff_detecta_renombrado_por_hash(tmp_path, snap_root, capsys):
+    touch(tmp_path / "viejo.txt", "contenido")
+    _snap(tmp_path)
+    (tmp_path / "viejo.txt").rename(tmp_path / "nuevo.txt")
+    fsort.snapshot_diff(tmp_path)
+    out = capsys.readouterr().out
+    assert "Movido/renombrado: viejo.txt -> nuevo.txt" in out
+    assert "- Eliminado" not in out
+    assert "+ Añadido" not in out
+
+
+def test_diff_latest_compara_dos_instantaneas(tmp_path, snap_root, capsys):
+    import time
+    touch(tmp_path / "a.txt", "uno")
+    _snap(tmp_path)
+    time.sleep(1.1)
+    touch(tmp_path / "b.txt", "dos")
+    _snap(tmp_path)
+    fsort.snapshot_diff(tmp_path, latest=True)
+    out = capsys.readouterr().out
+    assert "+ Añadido: b.txt" in out
+    assert "~ Modificado" not in out
+
+
+def test_diff_sin_instantanea_falla(tmp_path, snap_root):
+    with pytest.raises(InvalidArgumentError):
+        fsort.snapshot_diff(tmp_path)
+
+
+def test_diff_ext_filtra(tmp_path, snap_root, capsys):
+    touch(tmp_path / "a.txt", "uno")
+    _snap(tmp_path)
+    touch(tmp_path / "b.log", "dos")
+    fsort.snapshot_diff(tmp_path, ext="*.txt")
+    out = capsys.readouterr().out
+    assert "+ Añadido" not in out
+    assert "Sin cambios" in out
+
+
+def test_diff_no_compta_instantaneas_como_creados(tmp_path, monkeypatch, capsys):
+    """El arbol de instantaneas dentro del directorio no contamina el diff."""
+    root = tmp_path / "root"
+    root.mkdir()
+    touch(root / "a.txt")
+    monkeypatch.setenv("FSORT_SNAPSHOT_DIR", str(root / ".fsort-snap"))
+    fsort.dir_snapshot(root)
+    assert (root / ".fsort-snap").exists()
+    fsort.snapshot_diff(root)
+    out = capsys.readouterr().out
+    assert "Sin cambios" in out
+
+
+def test_snapshot_list_muestra_fecha_y_archivos(tmp_path, snap_root, capsys):
+    touch(tmp_path / "a.txt")
+    _snap(tmp_path)
+    fsort.snapshot_list(tmp_path)
+    out = capsys.readouterr().out
+    assert str(tmp_path) in out
+    assert "instantanea(s)" in out
+
+
+def test_snapshot_list_sin_instantaneas(tmp_path, snap_root, capsys):
+    fsort.snapshot_list(tmp_path)
+    assert "No hay instantaneas" in capsys.readouterr().out
+
+
+def test_snapshot_keep_purga_las_antiguas(tmp_path, snap_root, monkeypatch, capsys):
+    monkeypatch.setenv("SNAPSHOT_KEEP", "1")
+    touch(tmp_path / "a.txt")
+    _snap(tmp_path)
+    import time
+    time.sleep(1.1)
+    _snap(tmp_path)
+    files = fsort._snapshot_files_of(snap_root / fsort._snapshot_slug(tmp_path))
+    assert len(files) == 1
+    assert "Antigua purgada" in capsys.readouterr().out
+
+
+def test_snapshot_colision_sobrescribe_con_sufijo(tmp_path, snap_root):
+    touch(tmp_path / "a.txt")
+    p1 = _snap(tmp_path)
+    p2 = _snap(tmp_path)
+    assert p1 != p2
+    assert p2.name.endswith("_1.json")
+
+
+def test_acciones_snapshot_registered():
+    actions = config.load_and_validate()
+    assert actions["snapshot"]["func"] == "dir_snapshot"
+    assert actions["diff"]["func"] == "snapshot_diff"
+    assert actions["snapshot-list"]["func"] == "snapshot_list"

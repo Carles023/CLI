@@ -176,6 +176,24 @@
       "func": "sync_dirs",
       "kwargs": {"delete": true}
     },
+    "snapshot": {
+      "description": "Guarda una instantanea del directorio (inventario recursivo con tamano, mtime y SHA-256 hasta 25 MB por archivo) en ~/.fsort/snapshots/<directorio>/ con fecha. Conserva las 20 ultimas (SNAPSHOT_KEEP=0 conserva todas). Uso: snapshot <directorio> [nombre]. --dry-run no guarda nada",
+      "type": "python",
+      "func": "dir_snapshot",
+      "kwargs": {}
+    },
+    "diff": {
+      "description": "Compara el directorio con su ultima instantanea (o con '[nombre]') y muestra creados, modificados, borrados y movidos/renombrados (detectados por hash). Con --latest compara las dos ultimas instantaneas guardadas. Solo lectura; usa --dry-run para ver solo el resumen. Acepta 'ext' como segundo argumento para filtrar (p. ej. *.txt)",
+      "type": "python",
+      "func": "snapshot_diff",
+      "kwargs": {}
+    },
+    "snapshot-list": {
+      "description": "Lista las instantaneas guardadas (de todos los directorios o del indicado como argumento opcional) con fecha, numero de archivos y tamano",
+      "type": "python",
+      "func": "snapshot_list",
+      "kwargs": {}
+    },
     "ai": {
       "description": "Consulta la IA de Simarro. Pasa la pregunta como argumento (o usa --ai). Requiere FSORT_AI_KEY",
       "type": "ai"
