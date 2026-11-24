@@ -158,6 +158,18 @@
       "func": "extract_archive",
       "kwargs": {}
     },
+    "sincronizar": {
+      "description": "Sincroniza el arbol de <origen> en <destino> (mirror con subcarpetas, solo copia archivos nuevos o mas recientes). Con kwargs delete=True manda los sobrantes del destino a la papelera (recuperable con 'deshacer-limpieza'). El destino debe existir. Pide confirmacion salvo --yes; usa --dry-run para simular",
+      "type": "python",
+      "func": "sync_dirs",
+      "kwargs": {}
+    },
+    "sincronizar-espejo": {
+      "description": "Como 'sincronizar' pero tambien mueve a la papelera los archivos del destino que ya no existen en el origen (borrado recuperable). Pide confirmacion salvo --yes; usa --dry-run para simular",
+      "type": "python",
+      "func": "sync_dirs",
+      "kwargs": {"delete": true}
+    },
     "ai": {
       "description": "Consulta la IA de Simarro. Pasa la pregunta como argumento (o usa --ai). Requiere FSORT_AI_KEY",
       "type": "ai"

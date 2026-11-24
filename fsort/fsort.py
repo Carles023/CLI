@@ -447,6 +447,21 @@ def run_python_action(name: str, action: dict, args: list, dry_run: bool = False
         if func is aged_files:
             kwargs["assume_yes"] = (os.environ.get("FSORT_YES") == "1")
         func(directory, **kwargs)
+    elif func is sync_dirs:
+        if not args:
+            raise InvalidArgumentError(
+                f"'{name}': falta el origen (fsort.py {name} <origen> [destino])")
+        origen = _checked_dir(args[0], name)
+        if args[1:2] and args[1] in ("--destino", "-o"):
+            if len(args) < 3:
+                raise InvalidArgumentError(f"'{name}': falta la ruta tras --destino")
+            destino = Path(args[2]).expanduser()
+        elif len(args) > 1:
+            destino = Path(args[1]).expanduser()
+        else:
+            destino = None
+        kwargs["assume_yes"] = (os.environ.get("FSORT_YES") == "1")
+        func(origen, destino, **kwargs)
     elif func is extract_archive:
         if not args:
             raise InvalidArgumentError(
@@ -1747,7 +1762,7 @@ def _unpack_members(archivo: Path):
             if stem.endswith(s):
                 stem = stem[:-len(s)]
                 break
-        membros = [(stem or "contenido", False)]
+        membros = [(archivo.name or "contenido", False)]
     if membros is None:
         return None
 
@@ -1854,6 +1869,194 @@ def extract_archive(archivo: Path, destino: Path = None, dry_run: bool = False):
         raise OperationError(f"no se pudo extraer {path.name}: {e}")
 
     cprint(f"✓ Extraído {path.name} en {final}/ ({len(membros)} miembro(s)).")
+
+
+def _arbol(dir_base: Path, raiz: Path):
+    """Genera (ruta_relativa, Path_absoluto, es_dir) de todo el arbol de dir_base."""
+    for ruta in sorted(dir_base.rglob("*")):
+        try:
+            if not (ruta.is_file() or ruta.is_dir()):
+                continue
+            yield ruta.relative_to(dir_base), ruta, ruta.is_dir()
+        except OSError:
+            continue
+
+
+def _borrar_a_papelera(ruta: Path, trash: Path, dry_run: bool, logged: list) -> bool:
+    """Mueve un archivo o carpeta (recursivo) a la papelera. Dry-run no toca nada."""
+    if dry_run:
+        return True
+    try:
+        trash.mkdir(parents=True, exist_ok=True)
+        destino = trash / ruta.name
+        if destino.exists():
+            destino = _destino_unico(destino)
+        if ruta.is_dir():
+            for f in sorted(ruta.rglob("*")):
+                if f.is_file():
+                    rel = f.parent.relative_to(ruta)
+                    (destino / rel).mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(f), str(destino / rel))
+                    logged.append((str(f), str(destino / rel)))
+            shutil.rmtree(ruta)
+        else:
+            shutil.move(str(ruta), str(destino))
+            logged.append((str(ruta), str(destino)))
+        return True
+    except OSError:
+        return False
+
+
+def sync_dirs(origen: Path, destino: Path = None, dry_run: bool = False,
+              delete: bool = False, assume_yes: bool = False):
+    """
+    Sincroniza el arbol de <origen> en <destino> (mirror, respetando
+    subcarpetas) sin borrar en el destino salvo con 'borrar' (que manda a la
+    papelera lo que ya no existe en el origen y es recuperable con
+    'deshacer-limpieza'). Copia archivos nuevos o mas recientes (mtime) y
+    nunca toca los que ya cuadran. Sin --dry-run pide confirmacion (salvo
+    --yes/FSORT_YES=1). Sin destino se sincroniza con ./<nombre-origen>.
+    """
+    if origen is None:
+        raise InvalidArgumentError("falta el origen (fsort.py sincronizar <origen> [destino])")
+    if not origen.exists():
+        raise DirectoryNotFoundError(str(origen))
+    if not origen.is_dir():
+        raise NotADirectoryError_(str(origen))
+
+    if destino is None:
+        destino = Path(origen.resolve().name)
+    dst = Path(destino).expanduser()
+    if not dst.exists():
+        raise DestinationNotFoundError(str(dst))
+    if not dst.is_dir():
+        raise NotADirectoryError_(str(dst))
+    if origen.resolve() == dst.resolve():
+        raise InvalidArgumentError("origen y destino son el mismo directorio")
+    try:
+        dst.resolve().relative_to(origen.resolve())
+        raise InvalidArgumentError("el destino esta dentro del origen; elegiria otra ruta")
+    except ValueError:
+        pass
+
+    script_name = Path(__file__).name
+
+    # Estado de origen y destino
+    src_files = {}
+    src_dirs = set()
+    for rel, ruta, es_dir in _arbol(origen, origen):
+        if not es_dir and (ruta.name == script_name or ruta.name == "fsort.py"):
+            continue
+        if es_dir:
+            src_dirs.add(rel)
+        else:
+            st = ruta.stat()
+            src_files[rel] = (st.st_size, int(st.st_mtime))
+
+    dst_files = {}
+    dst_dirs = set()
+    for rel, ruta, es_dir in _arbol(dst, dst):
+        if es_dir:
+            dst_dirs.add(rel)
+        else:
+            st = ruta.stat()
+            dst_files[rel] = (st.st_size, int(st.st_mtime))
+
+    a_copiar = []
+    for rel, (size, mtime) in src_files.items():
+        if rel not in dst_files or dst_files[rel][0] != size or dst_files[rel][1] < mtime - 1:
+            a_copiar.append(rel)
+
+    a_crear_dirs = sorted(d for d in src_dirs if d not in dst_dirs)
+    borrar = []
+    if delete:
+        borrar = sorted(rel for rel in dst_files if rel not in src_files)
+
+    if not a_copiar and not a_crear_dirs and not borrar:
+        cprint("Ya sincronizado: no hay cambios.")
+        return
+
+    cprint(f"Sincronizar {origen} -> {dst}")
+    if a_crear_dirs:
+        cprint(f"  Crear carpetas: {len(a_crear_dirs)}")
+    if a_copiar:
+        total_copiar = sum(origen.joinpath(r).stat().st_size for r in a_copiar if origen.joinpath(r).exists())
+        cprint(f"  Copiar/actualizar archivos: {len(a_copiar)} ({_human_size(total_copiar)})")
+    if delete:
+        total_borrar = sum(dst.joinpath(r).stat().st_size for r in borrar if dst.joinpath(r).exists())
+        cprint(f"  Borrar de la papelera (sobrantes en destino): {len(borrar)} ({_human_size(total_borrar)})")
+
+    if dry_run:
+        for rel in a_crear_dirs:
+            cprint(f"  [DRY-RUN] mkdir: {rel}/")
+        for rel in a_copiar:
+            cprint(f"  [DRY-RUN] copiar: {rel}")
+        if delete:
+            for rel in borrar:
+                cprint(f"  [DRY-RUN] a papelera: {rel}")
+        cprint("[DRY-RUN] Nada sincronizado. Usa sin --dry-run para aplicar.")
+        return
+
+    if not (assume_yes or os.environ.get("FSORT_YES") == "1"):
+        if not _confirm("¿Sincronizar? [s/N] "):
+            cprint("Cancelado: no se ha copiado nada.")
+            return
+    else:
+        cprint("  (--yes/FSORT_YES: confirmado automaticamente)")
+
+    copiados = 0
+    creados = 0
+    eliminados = 0
+    logged = []
+    trash = Path(os.environ.get("FSORT_TRASH_DIR", "trash")).expanduser()
+
+    for rel in a_crear_dirs:
+        (dst / rel).mkdir(parents=True, exist_ok=True)
+        creados += 1
+
+    for rel in a_copiar:
+        try:
+            src = origen / rel
+            final = dst / rel
+            final.parent.mkdir(parents=True, exist_ok=True)
+            if final.exists() and final.is_file():
+                # el preexistente va a la papelera (nunca se pisa)
+                if _borrar_a_papelera(final, trash, False, logged):
+                    shutil.copy2(str(src), str(final))
+                    st = src.stat()
+                    os.utime(final, (st.st_atime, st.st_mtime))
+                    logged.append((str(src), str(final)))
+                    cprint(f"  Actualizado (anterior a papelera): {rel}")
+                else:
+                    cprint(f"  Omitido (no se pudo apartar el preexistente): {rel}")
+                    continue
+            else:
+                shutil.copy2(str(src), str(final))
+                logged.append((str(src), str(final)))
+                cprint(f"  Copiado: {rel}")
+            copiados += 1
+        except OSError as e:
+            cprint(f"  Error al copiar {rel}: {e}")
+
+    if delete:
+        for rel in reversed(borrar):
+            if _borrar_a_papelera(dst / rel, trash, False, logged):
+                cprint(f"  A papelera: {rel}")
+                eliminados += 1
+            else:
+                cprint(f"  Aviso: no se pudo mover a la papelera {rel}; se conserva")
+
+    if logged:
+        _append_move_log(logged)
+
+    partes = []
+    if creados:
+        partes.append(f"{creados} carpeta(s) creadas")
+    if copiados:
+        partes.append(f"{copiados} archivo(s) copiados")
+    if delete:
+        partes.append(f"{eliminados} sobrante(s) a la papelera")
+    cprint(f"\nCompletado: {', '.join(partes)}.")
 
 
 def empty_trash(directory: Path = None, dry_run: bool = False,
@@ -2248,6 +2451,8 @@ def dispatch(args, extra: list, actions: dict):
             example = f"fsort.py {command} [papelera]"
         elif action.get("func") == "summarize_file":
             example = f"fsort.py {command} <archivo> [destino.txt]"
+        elif action.get("func") == "sync_dirs":
+            example = f"fsort.py {command} <origen> [destino]"
         elif action.get("func") == "extract_archive":
             example = f"fsort.py {command} <archivo> [destino]"
         elif action.get("func") == "undo_clean":

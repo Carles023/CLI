@@ -59,6 +59,8 @@ tests/                   # pytest (lógica, CLI, imports, errores)
 | `vaciar-papelera-ya` | Vacía la papelera eliminando permanentemente su contenido. Acepta la papelera como argumento opcional. Usa --dry-run para simular | `fsort.py vaciar-papelera-ya [papelera]` |
 | `resumir` | Resume con la IA de Simarro el contenido de un archivo de texto (txt, md, pdf, docx, odt, csv, html...) y lo guarda en <archivo>_resumen.txt o en el destino indicado | `fsort.py resumir <archivo> [destino.txt]` |
 | `descomprimir-a` | Extrae un archivo (.zip, .tar, .tar.gz/.tgz, .tar.bz2, .tar.xz, .gz, .bz2, .xz) en <destino> o en una subcarpeta junto al original. Verifica integridad y rechaza rutas maliciosas (zip-slip); nunca sobrescribe (crea <destino>_1 si existe). Uso: descomprimir-a <archivo> [destino]. --dry-run lista los miembros | `fsort.py descomprimir-a <directorio>` |
+| `sincronizar` | Sincroniza el arbol de <origen> en <destino> (mirror con subcarpetas, solo copia archivos nuevos o mas recientes). Con kwargs delete=True manda los sobrantes del destino a la papelera (recuperable con 'deshacer-limpieza'). El destino debe existir. Pide confirmacion salvo --yes; usa --dry-run para simular | `fsort.py sincronizar <origen> [destino]` |
+| `sincronizar-espejo` | Como 'sincronizar' pero tambien mueve a la papelera los archivos del destino que ya no existen en el origen (borrado recuperable). Pide confirmacion salvo --yes; usa --dry-run para simular | `fsort.py sincronizar-espejo <origen> [destino]` |
 | `ai` | Consulta la IA de Simarro. Pasa la pregunta como argumento (o usa --ai). Requiere FSORT_AI_KEY | `fsort.py ai "tu pregunta"` |
 
 ## Uso

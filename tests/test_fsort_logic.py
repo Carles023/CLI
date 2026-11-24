@@ -696,7 +696,7 @@ def test_extract_tar_gz(tmp_path):
 def test_extract_gz_sueltos(tmp_path):
     _mk_archivos(tmp_path)
     fsort.extract_archive(tmp_path / "solo.txt.gz")
-    assert (tmp_path / "solo.txt" / "solo.txt").read_text() == "contenido gz"
+    assert (tmp_path / "solo.txt" / "solo.txt.gz").read_text() == "contenido gz"
 
 
 def test_extract_no_sobrescribe(tmp_path):
@@ -755,3 +755,124 @@ def test_accion_descomprimir_registered():
     from fsort import config
     actions = config.load_and_validate()
     assert actions["descomprimir-a"]["func"] == "extract_archive"
+
+
+# --- sincronizar --------------------------------------------------------------
+
+def _arbol_sync(tmp_path):
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    (src / "sub").mkdir(parents=True)
+    (src / "a.txt").write_text("nuevo")
+    (src / "sub" / "b.md").write_text("eme")
+    dst.mkdir()
+    (dst / "a.txt").write_text("viejo")
+    (dst / "sobrante.log").write_text("x")
+    import os, time
+    t_viejo = time.time() - 400 * 86400
+    os.utime(dst / "a.txt", (t_viejo, t_viejo))
+    return src, dst
+
+
+def _env_sync(tmp_path, monkeypatch):
+    monkeypatch.setenv("FSORT_TRASH_DIR", str(tmp_path / "trash"))
+    monkeypatch.setenv("FSORT_LOG_FILE", str(tmp_path / "log.jsonl"))
+    monkeypatch.setenv("FSORT_YES", "1")
+
+
+def test_sync_crea_y_actualiza(tmp_path, monkeypatch):
+    src, dst = _arbol_sync(tmp_path)
+    _env_sync(tmp_path, monkeypatch)
+    fsort.sync_dirs(src, dst)
+    assert (dst / "a.txt").read_text(encoding="utf-8") == "nuevo"
+    assert (dst / "sub" / "b.md").exists()
+    assert (dst / "sobrante.log").exists()  # sin delete no se toca
+
+
+def test_sync_dry_run_no_toca(tmp_path, monkeypatch, capsys):
+    src, dst = _arbol_sync(tmp_path)
+    _env_sync(tmp_path, monkeypatch)
+    fsort.sync_dirs(src, dst, dry_run=True)
+    assert "DRY-RUN" in capsys.readouterr().out
+    assert (dst / "a.txt").read_text(encoding="utf-8") == "viejo"
+
+
+def test_sync_espejo_papelera_y_undo(tmp_path, monkeypatch):
+    src, dst = _arbol_sync(tmp_path)
+    _env_sync(tmp_path, monkeypatch)
+    fsort.sync_dirs(src, dst, delete=True)
+    assert not (dst / "sobrante.log").exists()
+    assert (tmp_path / "trash" / "sobrante.log").exists()
+    fsort.undo_clean(assume_yes=True)
+    assert (dst / "sobrante.log").exists()
+
+
+def test_sync_colision_va_a_papelera(tmp_path, monkeypatch):
+    # archivo preexistente MAS NUEVO en destino: no debe copiarse encima
+    src, dst = _arbol_sync(tmp_path)
+    _env_sync(tmp_path, monkeypatch)
+    import os, time
+    t = time.time() + 100
+    os.utime(dst / "a.txt", (t, t))
+    fsort.sync_dirs(src, dst)
+    assert (dst / "a.txt").read_text(encoding="utf-8") == "viejo"  # no se toca
+
+
+def test_sync_ya_sincronizado(tmp_path, monkeypatch, capsys):
+    src, dst = _arbol_sync(tmp_path)
+    _env_sync(tmp_path, monkeypatch)
+    fsort.sync_dirs(src, dst)
+    capsys.readouterr()
+    fsort.sync_dirs(src, dst)
+    assert "Ya sincronizado" in capsys.readouterr().out
+
+
+def test_sync_origen_destino_iguales(tmp_path, monkeypatch):
+    _env_sync(tmp_path, monkeypatch)
+    with pytest.raises(InvalidArgumentError):
+        fsort.sync_dirs(tmp_path, tmp_path)
+
+
+def test_sync_destino_dentro_origen(tmp_path, monkeypatch):
+    src = tmp_path / "src"
+    src.mkdir()
+    _env_sync(tmp_path, monkeypatch)
+    (src / "dentro").mkdir()
+    with pytest.raises(InvalidArgumentError):
+        fsort.sync_dirs(src, src / "dentro")
+
+
+def test_sync_sin_tty_no_copia(tmp_path, monkeypatch, no_tty):
+    src, dst = _arbol_sync(tmp_path)
+    monkeypatch.setenv("FSORT_TRASH_DIR", str(tmp_path / "trash"))
+    monkeypatch.delenv("FSORT_YES", raising=False)
+    fsort.sync_dirs(src, dst)
+    assert (dst / "a.txt").read_text(encoding="utf-8") == "viejo"
+
+
+def test_sync_destino_no_existe(tmp_path, monkeypatch):
+    src = tmp_path / "src"
+    src.mkdir()
+    _env_sync(tmp_path, monkeypatch)
+    from fsort.errores import DestinationNotFoundError
+    with pytest.raises(DestinationNotFoundError):
+        fsort.sync_dirs(src, tmp_path / "nodst")
+
+
+def test_sync_omite_mismo_mtime(tmp_path, monkeypatch, capsys):
+    src, dst = _arbol_sync(tmp_path)
+    _env_sync(tmp_path, monkeypatch)
+    fsort.sync_dirs(src, dst)          # primera pasada
+    import os
+    st = os.stat(dst / "a.txt")
+    os.utime(src / "a.txt", (st.st_atime, st.st_mtime))  # misma marca
+    capsys.readouterr()
+    fsort.sync_dirs(src, dst)
+    assert "Ya sincronizado" in capsys.readouterr().out
+
+
+def test_accions_sync_registered():
+    from fsort import config
+    actions = config.load_and_validate()
+    assert actions["sincronizar"]["func"] == "sync_dirs"
+    assert actions["sincronizar-espejo"]["kwargs"]["delete"] is True
