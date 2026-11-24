@@ -876,3 +876,81 @@ def test_accions_sync_registered():
     actions = config.load_and_validate()
     assert actions["sincronizar"]["func"] == "sync_dirs"
     assert actions["sincronizar-espejo"]["kwargs"]["delete"] is True
+
+
+# --- duplicados-hardlink ------------------------------------------------------
+
+def _dup_dir(tmp_path):
+    a = tmp_path / "a" / "x.bin"
+    b = tmp_path / "b" / "y.bin"
+    c = tmp_path / "z.bin"
+    for p in (a, b, c):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"duplicado" * 100)
+    import os, time
+    t = time.time()
+    os.utime(a, (t - 300, t - 300))
+    a_único = tmp_path / "otro.bin"
+    a_único.write_bytes(b"distinto")
+    return a, b, c
+
+
+def _env_dup(tmp_path, monkeypatch):
+    # papelera dentro del arbol: la salvaguarda de dedup_hardlink debe excluir los .bak
+    trash = tmp_path / "trash"
+    monkeypatch.setenv("FSORT_TRASH_DIR", str(trash))
+    monkeypatch.setenv("FSORT_YES", "1")
+    return trash
+
+
+def test_hardlink_dedup(tmp_path, monkeypatch):
+    a, b, c = _dup_dir(tmp_path)
+    trash = _env_dup(tmp_path, monkeypatch)
+    fsort.dedup_hardlink(tmp_path)
+    import os
+    ia, ib, ic = (os.stat(p).st_ino for p in (a, b, c))
+    assert ia == ib == ic                     # los tres, mismo inodo
+    assert os.stat(a).st_nlink == 3
+    assert b.read_bytes() == a.read_bytes()   # rutas intactas
+    assert (tmp_path / "otro.bin").exists()   # no duplicado intacto
+    assert (trash / "y.bin.bak").exists()  # backup del reemplazado
+
+
+def test_hardlink_dry_run_no_toca(tmp_path, monkeypatch):
+    a, b, c = _dup_dir(tmp_path)
+    _env_dup(tmp_path, monkeypatch)
+    fsort.dedup_hardlink(tmp_path, dry_run=True)
+    import os
+    assert os.stat(a).st_ino != os.stat(b).st_ino
+
+
+def test_hardlink_idempotente(tmp_path, monkeypatch, capsys):
+    _dup_dir(tmp_path)
+    _env_dup(tmp_path, monkeypatch)
+    fsort.dedup_hardlink(tmp_path)
+    capsys.readouterr()
+    fsort.dedup_hardlink(tmp_path)
+    assert "Sin cambios" in capsys.readouterr().out
+
+
+def test_hardlink_sin_tty_no_toca(tmp_path, monkeypatch):
+    a, b, c = _dup_dir(tmp_path)
+    monkeypatch.setenv("FSORT_TRASH_DIR", str(tmp_path.parent / (tmp_path.name + "_t")))
+    monkeypatch.delenv("FSORT_YES", raising=False)
+    fsort.dedup_hardlink(tmp_path)
+    import os
+    assert os.stat(a).st_ino != os.stat(b).st_ino
+
+
+def test_hardlink_delete(tmp_path, monkeypatch):
+    a, b, c = _dup_dir(tmp_path)
+    monkeypatch.setenv("FSORT_YES", "1")
+    fsort.dedup_hardlink(tmp_path, delete=True)
+    assert a.exists()
+    assert not b.exists() and not c.exists()
+
+
+def test_accion_hardlink_registered():
+    from fsort import config
+    actions = config.load_and_validate()
+    assert actions["duplicados-hardlink"]["func"] == "dedup_hardlink"

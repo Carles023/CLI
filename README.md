@@ -47,6 +47,7 @@ tests/                   # pytest (lógica, CLI, imports, errores)
 | `mover-copiar` | Copia archivos o carpetas al directorio destino en lugar de moverlos | `fsort.py mover-copiar <elemento>... <destino>` |
 | `duplicados` | Detecta archivos duplicados (mismo contenido) en un directorio mostrando los grupos y el espacio recuperable | `fsort.py duplicados <directorio>` |
 | `duplicados-eliminar` | Detecta archivos duplicados y, en interactivos, deja elegir qué copia conservar de cada grupo (por defecto conserva el más antiguo y elimina el resto) | `fsort.py duplicados-eliminar <directorio>` |
+| `duplicados-hardlink` | Convierte los duplicados (mismo contenido) en hardlinks a la copia mas antigua: libera espacio sin perder ninguna ruta (cada archivo sigue accesible en su sitio). Solo toca grupos del mismo filesystem. Pide confirmacion salvo --yes; usa --dry-run para ver el plan | `fsort.py duplicados-hardlink <directorio>` |
 | `reporte` | Resumen de un directorio: nº de archivos, tamaño total, top de extensiones, temporales detectados y duplicados (solo lectura). Acepta 'top' de extensiones como segundo argumento | `fsort.py reporte <directorio>` |
 | `mas-grandes` | Lista los archivos más grandes de un directorio (top N, por defecto 10). Acepta 'top' como segundo argumento | `fsort.py mas-grandes <directorio> [top]` |
 | `mas-antiguos` | Lista los archivos más antiguos de un directorio ordenados del más viejo al más nuevo (top N, por defecto 15). Acepta 'top' como segundo argumento | `fsort.py mas-antiguos <directorio> [top]` |
@@ -80,6 +81,7 @@ python3 fsort.py ordenar ~/Descargas
 python3 fsort.py info ~/Documentos
 python3 fsort.py reporte ~/Descargas
 FSORT_YES=1 python3 fsort.py limpiar-auto ~/Descargas   # en cron/scripts (sin preguntar)
+python3 fsort.py duplicados-hardlink ~/Fotos             # recuperar espacio sin perder rutas
 python3 fsort.py mover foto.jpg docs ~/Todos
 
 # Listar los comandos disponibles

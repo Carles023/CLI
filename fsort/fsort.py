@@ -2059,6 +2059,193 @@ def sync_dirs(origen: Path, destino: Path = None, dry_run: bool = False,
     cprint(f"\nCompletado: {', '.join(partes)}.")
 
 
+def dedup_hardlink(directory: Path, dry_run: bool = False, delete: bool = False,
+                   min_size: int = 1, recursive: bool = True, assume_yes: bool = False):
+    """
+    Convierte los archivos duplicados (mismo contenido) en hardlinks a una copia
+    'canonica' (la mas antigua), liberando espacio sin perder ninguna ruta.
+    Recupera el espacio como 'duplicados-eliminar' pero conservando todos los
+    caminos. Con 'delete=True' elimina en vez de hardlinkear (igual que
+    'duplicados-eliminar' pero en lote, sin preguntar grupo a grupo).
+
+    Solo actua sobre grupos cuyo canonico y redundantes estan en el mismo
+    filesystem (st_dev); los demas se listan pero no se tocan. Pide
+    confirmacion salvo --dry-run / --yes / FSORT_YES=1.
+    """
+    if not directory.exists():
+        raise DirectoryNotFoundError(str(directory))
+    if not directory.is_dir():
+        raise NotADirectoryError_(str(directory))
+
+    script_name = Path(__file__).name
+    walker = directory.rglob("*") if recursive else directory.iterdir()
+    files = [f for f in walker if f.is_file()
+             and f.name != script_name and f.name != "fsort.py"]
+
+    # No deduplicar lo que ya esta en la papelera (los .bak son copias de seguridad)
+    trash_probe = Path(os.environ.get("FSORT_TRASH_DIR", "trash")).expanduser()
+    try:
+        trash_res = trash_probe.resolve()
+    except OSError:
+        trash_res = trash_probe
+
+    def en_trash(p: Path) -> bool:
+        try:
+            p.resolve().relative_to(trash_res)
+            return True
+        except (ValueError, OSError):
+            return False
+
+    files = [f for f in files if not en_trash(f)]
+
+    # Paso 1: agrupar por tamano
+    by_size: dict = {}
+    for file_path in files:
+        try:
+            size = file_path.stat().st_size
+        except OSError:
+            continue
+        if size < min_size:
+            continue
+        by_size.setdefault(size, []).append(file_path)
+
+    # Paso 2: hash solo a candidatos
+    by_hash: dict = {}
+    for size, candidates in by_size.items():
+        if len(candidates) < 2:
+            continue
+        for file_path in candidates:
+            digest = _sha256(file_path)
+            if digest is None:
+                continue
+            by_hash.setdefault((size, digest), []).append(file_path)
+
+    grupos = [ps for ps in by_hash.values() if len(ps) > 1]
+    if not grupos:
+        cprint("No hay duplicados que deduplicar.")
+        return
+
+    grupos.sort(key=lambda ps: ps[0].stat().st_size * (len(ps) - 1), reverse=True)
+
+    # Paso 3: filtrar por filesystem comun (st_dev) y clasificar
+    accionables = []
+    total_recuperable = 0
+    omitidos_fs = 0
+    ya_hardlink = 0
+    for paths in grupos:
+        try:
+            st = paths[0].stat()
+        except OSError:
+            continue
+        dev = st.st_dev
+        mismo = [p for p in paths if p.stat().st_dev == dev]
+        omitidos_fs += len(paths) - len(mismo)
+        if len(mismo) < 2:
+            continue
+        canon = min(mismo, key=lambda p: p.stat().st_mtime)
+        redundantes = []
+        for p in mismo:
+            if p == canon:
+                continue
+            st_p = p.stat()
+            st_c = canon.stat()
+            if st_p.st_ino == st_c.st_ino:
+                ya_hardlink += 1
+                continue
+            redundantes.append(p)
+        if not redundantes:
+            continue
+        accionables.append((canon, redundantes, canon.stat().st_size))
+        total_recuperable += canon.stat().st_size * len(redundantes)
+
+    if not accionables:
+        if ya_hardlink:
+            cprint(f"Sin cambios: {ya_hardlink} duplicado(s) ya estan hardlinkeados.")
+        else:
+            cprint("Sin cambios: no hay duplicados deduplicables en un mismo filesystem.")
+        return
+
+    n_total = sum(len(r) for _, r, _ in accionables)
+    if delete:
+        cprint(f"{len(accionables)} grupo(s): {n_total} duplicado(s) a eliminar "
+              f"(liberará {_human_size(total_recuperable)}).")
+    else:
+        cprint(f"{len(accionables)} grupo(s): {n_total} duplicado(s) a enlazar "
+              f"(liberará {_human_size(total_recuperable)}).")
+    for canon, redundantes, size in accionables[:20]:
+        cprint(f"  {_human_size(size)} c/u  canonico: {canon}")
+        for r in redundantes:
+            cprint(f"    -> {r}")
+    if len(accionables) > 20:
+        cprint(f"  ... y {len(accionables) - 20} grupo(s) mas.")
+    if omitidos_fs:
+        cprint(f"  Omitidos por estar en otro filesystem: {omitidos_fs}.")
+    if ya_hardlink:
+        cprint(f"  Ya hardlinkeados (se conservan): {ya_hardlink}.")
+    cprint()
+
+    if dry_run:
+        cprint("[DRY-RUN] No se ha tocado nada. Usa sin --dry-run para aplicar y "
+               "liberar el espacio.")
+        return
+
+    if not (assume_yes or os.environ.get("FSORT_YES") == "1"):
+        if not _confirm("Confirmar? [s/N] "):
+            cprint("Cancelado: no se ha tocado nada.")
+            return
+    else:
+        cprint("  (--yes/FSORT_YES: confirmado automaticamente)")
+
+    trash = Path(os.environ.get("FSORT_TRASH_DIR", "trash")).expanduser()
+    processed = 0
+    freed = 0
+    errores = 0
+    if not delete:
+        trash.mkdir(parents=True, exist_ok=True)
+    for canon, redundantes, size in accionables:
+        for r in redundantes:
+            if delete:
+                try:
+                    r.unlink()
+                    processed += 1
+                    freed += size
+                except OSError as e:
+                    errores += 1
+                    cprint(f"  Error al eliminar {r}: {e}")
+                continue
+            try:
+                backup = trash / f"{r.name}.bak"
+                if backup.exists():
+                    backup = _destino_unico(backup)
+                shutil.move(str(r), str(backup))
+                try:
+                    os.link(str(canon), str(r))
+                    processed += 1
+                    freed += size
+                except OSError:
+                    # restaurar el original si el hardlink fallo
+                    try:
+                        shutil.move(str(backup), str(r))
+                    except OSError:
+                        pass
+                    raise
+            except OSError as e:
+                errores += 1
+                cprint(f"  Error con {r}: {e}")
+
+    cprint()
+    if delete:
+        cprint(f"Completado: {processed} archivo(s) eliminados. "
+              f"Liberado: {_human_size(freed)}.")
+    else:
+        cprint(f"Completado: {processed} duplicado(s) hardlinkeados. "
+              f"Liberado: {_human_size(freed)}. "
+              "(Backups .bak en la papelera; 'deshacer-limpieza' no los usa: "
+              "borralos a mano cuando quieras).")
+    if errores:
+        cprint(f"  Errores: {errores} (sin contar).")
+
+
 def empty_trash(directory: Path = None, dry_run: bool = False,
                 top: int = 0, delete: bool = False, ext: str = "*"):
     """

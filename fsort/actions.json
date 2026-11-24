@@ -86,6 +86,12 @@
       "func": "find_duplicates",
       "kwargs": {"delete": true, "interactive": true}
     },
+    "duplicados-hardlink": {
+      "description": "Convierte los duplicados (mismo contenido) en hardlinks a la copia mas antigua: libera espacio sin perder ninguna ruta (cada archivo sigue accesible en su sitio). Solo toca grupos del mismo filesystem. Pide confirmacion salvo --yes; usa --dry-run para ver el plan",
+      "type": "python",
+      "func": "dedup_hardlink",
+      "kwargs": {}
+    },
     "reporte": {
       "description": "Resumen de un directorio: nº de archivos, tamaño total, top de extensiones, temporales detectados y duplicados (solo lectura). Acepta 'top' de extensiones como segundo argumento",
       "type": "python",

@@ -21,7 +21,7 @@ AI_SYSTEM_PROMPT = (
     "  ordenar <dir>, ordenar-copiar <dir>, ordenar-recursivo <dir>, ordenar-auto <dir>\n"
     "  vaciar <dir> <destino>, vaciar-copiar <dir> <destino>\n"
     "  mover <elem...> <destino>, mover-copiar <elem...> <destino>\n"
-    "  duplicados <dir>, duplicados-eliminar <dir>\n"
+    "  duplicados <dir>, duplicados-eliminar <dir>, duplicados-hardlink <dir>\n"
     "  mas-grandes <dir> [N], mas-grandes-eliminar <dir> [N]\n"
     "  mas-antiguos <dir> [N]  (top N más antiguos, por defecto 15)\n"
     "  por-edad <dir> [días]  (mover a la papelera los más antiguos de N días)\n"
