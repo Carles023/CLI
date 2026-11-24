@@ -125,9 +125,3 @@ class UnsupportedFileFormatError(FsortError):
     """El formato del archivo no es compatible para extraer su texto."""
 
     message = "Formato de archivo no compatible"
-
-
-class FileReadError(FsortError):
-    """No se pudo leer el contenido del archivo indicado."""
-
-    message = "No se pudo leer el archivo"

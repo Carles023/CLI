@@ -6,7 +6,11 @@ import re
 import sys
 from pathlib import Path
 
-ACTIONS_FILE = Path(__file__).parent / "actions.json"
+_PKG_DIR = Path(__file__).resolve().parent
+ACTIONS_FILE = next(
+    (p for p in (_PKG_DIR / "actions.json", _PKG_DIR.parent / "actions.json") if p.exists()),
+    _PKG_DIR.parent / "actions.json",
+)
 
 VALID_TYPES = {"command", "python", "ai"}
 PLACEHOLDER_RE = re.compile(r"\{(\d+)\}")
@@ -60,11 +64,18 @@ AI_ENV_VARS = [
 ]
 
 
-from errores import (
-    ActionsFileInvalidError,
-    ActionsFileNotFoundError,
-    ActionsValidationError,
-)
+if __package__:
+    from .errores import (
+        ActionsFileInvalidError,
+        ActionsFileNotFoundError,
+        ActionsValidationError,
+    )
+else:
+    from errores import (
+        ActionsFileInvalidError,
+        ActionsFileNotFoundError,
+        ActionsValidationError,
+    )
 
 
 def validate_action(name: str, action: object) -> list:
@@ -148,8 +159,9 @@ def validate_func_exists(name: str, action: dict) -> list:
     func_name = action.get("func")
     if not isinstance(func_name, str) or not func_name.strip():
         return errors
+    fsort_name = __package__ + ".fsort" if __package__ else "fsort"
     try:
-        fsort = importlib.import_module("fsort")
+        fsort = importlib.import_module(fsort_name)
     except ImportError as e:
         return [f"acciones.{name}.func: no se pudo importar fsort.py ({e})"]
     if not callable(getattr(fsort, func_name, None)):

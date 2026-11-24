@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """Actualiza el README con la tabla de comandos definidos en actions.json."""
 import json
+import os
 from pathlib import Path
 
-BASE = Path(__file__).parent
-ACTIONS_FILE = BASE / "actions.json"
-README_FILE = BASE / "README.md"
+_HERE = Path(__file__).resolve().parent
+_PKG_ACTIONS = _HERE / "actions.json"
+ACTIONS_FILE = Path(os.environ.get("FSORT_ACTIONS_FILE",
+                                  _PKG_ACTIONS if _PKG_ACTIONS.exists()
+                                  else _HERE.parent / "actions.json"))
+README_FILE = Path(os.environ.get("FSORT_README", "")) if os.environ.get("FSORT_README") \
+    else next((p for p in (_HERE.parent / "README.md", _HERE.parent.parent / "README.md")
+               if p.exists()), _HERE.parent / "README.md")
 MARK_START = "{{ACCIONES}}"
 MARK_END = "{{FIN_ACCIONES}}"
 TABLE_HEADER = "| Comando | Descripción | Uso |"
@@ -47,11 +53,15 @@ def _ai_defaults_match_code() -> list:
     Devuelve la lista de discrepancias (vacia si todo cuadra). Evita que el
     README documente defaults que ya no son los del codigo.
     """
-    from config import AI_ENV_VARS
-    mismatches = []
     try:
-        import fsort
+        if __package__:
+            from .config import AI_ENV_VARS
+            from . import fsort
+        else:
+            from config import AI_ENV_VARS
+            import fsort
         cfg = fsort._ai_config()
+        mismatches = []
         # CA por defecto (fsort._ssl_context)
         expected = {
             "FSORT_AI_URL": f"`{cfg['base_url']}`",
@@ -111,8 +121,11 @@ def main() -> int:
 
 def _ai_table() -> str:
     """Construye la tabla de variables IA desde AI_ENV_VARS (unica fuente de verdad
-    en config.py), para no duplicar defaults en dos sitios y desincronizarlos."""
-    from config import AI_ENV_VARS
+    en config.py), para no duplicar defaults     en dos sitios y desincronizarlos."""
+    if __package__:
+        from .config import AI_ENV_VARS
+    else:
+        from config import AI_ENV_VARS
     rows = [
         "| Variable | Descripción | Por defecto |",
         "| --- | --- | --- |",

@@ -1,0 +1,1590 @@
+#!/usr/bin/env python3
+import argparse
+import glob
+import hashlib
+import json as jsonlib
+import os
+import re
+import shlex
+import shutil
+import ssl
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+_IMPORT_ERRS = {
+    "ActionCommandMissingError", "ActionFuncMissingError", "ActionFuncNotFoundError",
+    "ActionNotExecutableError", "AIError", "DestinationNotFoundError",
+    "DirectoryNotFoundError", "FileReadError", "FsortError", "InvalidActionError",
+    "InvalidArgumentError", "NotADirectoryError_", "OperationError",
+    "UnsupportedFileFormatError",
+}
+if __package__:
+    from . import config as _config
+    from . import errores as _errores
+else:
+    import config as _config
+    import errores as _errores
+
+ACTIONS_FILE = _config.ACTIONS_FILE
+AI_SYSTEM_PROMPT = _config.AI_SYSTEM_PROMPT
+SUMMARY_MAX_CHARS = _config.SUMMARY_MAX_CHARS
+SUMMARY_SYSTEM_PROMPT = _config.SUMMARY_SYSTEM_PROMPT
+ActionsValidationError = _config.ActionsValidationError
+load_and_validate = _config.load_and_validate
+
+_g = globals()
+for _n in _IMPORT_ERRS:
+    _g[_n] = getattr(_errores, _n)
+del _n
+
+
+# --- Coloreado de salida (ANSI) -------------------------------------------------
+_COLORS_ENABLED = sys.stdout.isatty() and not os.environ.get("NO_COLOR") \
+    and os.environ.get("TERM", "") != "dumb"
+
+_RESET = "\033[0m"
+_BOLD = "\033[1m"
+_DIM = "\033[2m"
+_RED = "\033[31m"
+_GREEN = "\033[32m"
+_YELLOW = "\033[33m"
+_BLUE = "\033[34m"
+_CYAN = "\033[36m"
+
+# Palabras clave iniciales -> color (se evaluan en orden; la primera que encaja gana)
+_KEYWORD_COLORS = (
+    ("✗ Error", _RED + _BOLD),
+    ("✗", _RED + _BOLD),
+    ("✓", _GREEN + _BOLD),
+    ("Error", _RED),
+    ("Eliminado", _RED),
+    ("Eliminada", _RED),
+    ("NO vaciada", _YELLOW),
+    ("Papelera NO", _YELLOW),
+    ("Movido", _GREEN),
+    ("Copiado", _GREEN),
+    ("Conservar", _CYAN),
+    ("Omitido", _DIM),
+    ("Duplicado", _DIM),
+    ("Completado", _GREEN + _BOLD),
+    ("Papelera vaciada", _GREEN + _BOLD),
+    ("Encontrados", _CYAN + _BOLD),
+    ("Sugerencia", _DIM),
+    ("Ejemplo", _DIM),
+)
+
+_PREFIX_COLORS = (
+    ("[DRY-RUN]", _YELLOW + _BOLD),
+    ("Simulación", _YELLOW),
+)
+
+
+def _c(text: str, color: str) -> str:
+    """Rodea el texto con el color ANSI indicado si el coloreado está activo."""
+    if not _COLORS_ENABLED or not color:
+        return text
+    return f"{color}{text}{_RESET}"
+
+
+def _colorize_line(line: str) -> str:
+    """Aplica color a una linea segun su prefijo/palabra clave inicial."""
+    if not _COLORS_ENABLED:
+        return line
+    stripped = line.lstrip()
+    indent = line[:len(line) - len(stripped)]
+    for kw, col in _PREFIX_COLORS:
+        if stripped.startswith(kw):
+            rest = stripped[len(kw):]
+            return indent + _c(kw, col) + rest
+    for kw, col in _KEYWORD_COLORS:
+        if stripped.startswith(kw):
+            return indent + _c(stripped, col)
+    return line
+
+
+def cprint(*args, sep=" ", end="\n", file=None, **kwargs):
+    """print() con color: colorea la primera linea segun su palabra clave inicial."""
+    text = sep.join(str(a) for a in args)
+    lines = text.split("\n")
+    for i, ln in enumerate(lines):
+        if ln:
+            lines[i] = _colorize_line(ln)
+            break
+    print("\n".join(lines), end=end, file=file, **kwargs)
+
+
+def _confirm(prompt: str = "Confirmar? [s/N] ", default_no: bool = True) -> bool:
+    """Pide confirmacion en un terminal interactivo.
+
+    - Sin TTY (stdin o /dev/tty no disponibles, p. ej. pipeado): avisa y devuelve
+      False (medida de seguridad: nunca borra a traicion).
+    - Con variable de entorno FSORT_YES=1 (o --yes via kwargs): no pregunta, confirma.
+    - Escribe el prompt a /dev/tty (si existe) para que se vea aunque el stdout
+      este redirigido, y lee la respuesta de stdin.
+    Devuelve True solo con 's'/'si'/'yes'/'y' (o confirmacion automatica).
+    """
+    if os.environ.get("FSORT_YES") == "1":
+        return True
+    if not sys.stdin.isatty():
+        cprint("  (sin TTY: no se puede confirmar; omitido. Usa FSORT_YES=1 o --yes)")
+        return False
+    try:
+        fd = os.open("/dev/tty", os.O_WRONLY)
+        with os.fdopen(fd, "w", encoding="utf-8") as tty:
+            tty.write(prompt)
+            tty.flush()
+    except OSError:
+        cprint(prompt, end="", flush=True)
+    try:
+        ans = sys.stdin.readline().strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return ans in ("s", "si", "sí", "yes", "y")
+
+
+def _suggest(text: str) -> str:
+    """Añade una pista de solución al mensaje cuando aplica."""
+    lowered = text.lower()
+    if "no es un directorio" in lowered:
+        return " La ruta indicada es un archivo; necesitas una carpeta (usa por ejemplo 'dirname <ruta>')."
+    if "destino no existe" in lowered:
+        return " Crea el directorio de destino o indica una ruta existente."
+    if "no existe" in lowered and "directorio" in lowered:
+        return " Comprueba la ruta; si el directorio aún no existe, créalo antes."
+    if "no existe" in lowered and "destino" in lowered:
+        return " Crea el directorio de destino o indica una ruta existente."
+    if "debe ser un entero" in lowered or "debe ser mayor que 0" in lowered:
+        return " Pasa un número entero mayor que cero (ej: '5')."
+    if "falta el directorio" in lowered:
+        return " Indica el directorio como argumento (ej: 'fsort.py ordenar <directorio>')."
+    if "falta el destino" in lowered:
+        return " Añade el destino como segundo argumento (ej: 'fsort.py vaciar <origen> <destino>')."
+    if "al menos un elemento" in lowered:
+        return " Indica al menos un elemento y un directorio destino."
+    return ""
+
+
+def load_actions(path: Path = ACTIONS_FILE) -> dict:
+    """Carga y valida (estructura y funciones) las acciones definidas en actions.json."""
+    return load_and_validate(path)
+
+
+def _checked_dir(arg, action_name: str) -> Path:
+    """Convierte el argumento en Path (con ~ resuelto) y comprueba que exista con la ruta indicada."""
+    if arg is None:
+        raise InvalidArgumentError(
+            f"'{action_name}': falta el directorio (fsort.py {action_name} <directorio>)")
+    p = Path(arg).expanduser()
+    if not p.exists():
+        raise DirectoryNotFoundError(str(p))
+    return p.resolve()
+
+
+def run_action(name: str, action: dict, args: list, dry_run: bool = False):
+    """Ejecuta una acción definida en el JSON. Soporta tipos 'command' y 'python'."""
+    if not isinstance(action, dict):
+        raise InvalidActionError(
+            f"la acción '{name}' debe ser un objeto, no '{type(action).__name__}'")
+
+    action_type = action.get("type")
+
+    if action_type == "python":
+        run_python_action(name, action, args, dry_run)
+        return
+
+    if action_type == "ai":
+        run_ai_action(name, action, args, dry_run)
+        return
+
+    if action_type != "command":
+        raise ActionNotExecutableError(
+            f"el tipo '{action_type}' de la acción '{name}' no está soportado "
+            "(válidos: 'command', 'python', 'ai')")
+
+    command = action.get("command")
+    if not command:
+        raise ActionCommandMissingError(
+            f"la acción '{name}' (tipo 'command') no define el campo 'command'")
+
+    placeholders = {int(n) for n in re.findall(r"\{(\d+)\}", command)}
+    if placeholders and len(args) < max(placeholders):
+        faltan = sorted(set(range(1, max(placeholders) + 1)) - set(range(1, len(args) + 1)))
+        raise InvalidArgumentError(
+            f"'{name}': la acción usa los marcadores "
+            f"{', '.join('{%d}' % p for p in sorted(placeholders))} "
+            f"pero faltan argumentos (faltan {{{faltan[0]}}}..{{{faltan[-1]}}})"
+            if faltan else
+            f"'{name}': la acción usa los marcadores "
+            f"{', '.join('{%d}' % p for p in sorted(placeholders))} "
+            f"pero solo se recibieron {len(args)} argumento(s)")
+
+    # Sustituir {1}, {2}, ... por los argumentos del usuario
+    for i, arg in enumerate(args, 1):
+        command = command.replace(f"{{{i}}}", arg)
+
+    if dry_run:
+        cprint(f"[DRY-RUN] Ejecutaría: {command}")
+        _dry_run_command(command, name=name, action_args=args)
+        return
+
+    argv = shlex.split(command) if os.name != "nt" else command
+    try:
+        if os.name == "nt":
+            result = subprocess.run(command, shell=True)
+        else:
+            try:
+                result = subprocess.run(argv)
+            except FileNotFoundError:
+                raise ActionNotExecutableError(
+                    f"el programa '{argv[0]}' definido por la acción '{name}' "
+                    "no está instalado o no está en el PATH")
+        sys.exit(result.returncode)
+    except PermissionError:
+        raise ActionNotExecutableError(
+            f"sin permisos para ejecutar '{argv[0]}' (acción '{name}')")
+    except OSError as e:
+        raise OperationError(f"no se pudo ejecutar '{command}': {e}")
+
+
+def run_ai_action(name: str, action: dict, args: list, dry_run: bool = False):
+    """Acción de tipo 'ai': pregunta a la IA de Simarro y muestra la respuesta."""
+    question = " ".join(args).strip()
+
+    if dry_run:
+        cprint(f"[DRY-RUN] Consultaría la IA de Simarro con la pregunta: "
+              f"'{question or '(interactiva)'}'")
+        return
+
+    if not question:
+        raise InvalidArgumentError(
+            f"'{name}': falta la pregunta "
+            f"(fsort.py {name} \"tu pregunta\" o fsort.py --ai \"tu pregunta\")")
+
+    cprint(f"Consultando la IA de Simarro ({_ai_config()['model']})...\n")
+    cprint(ask_ai(question))
+    cprint()
+
+
+destructive_commands = ("mv", "rm", "cp", "mkdir", "rmdir", "touch", "truncate",
+                        "dd", "tee", "ln", "rsync")
+
+
+
+def _dry_run_command(command: str, name: str = "", action_args: list = None):
+    """Simula un comando 'type: command' listando lo que tocaría, sin ejecutar nada.
+
+    Para la acción 'limpiar' previsualiza los archivos temporales que se moverían.
+    Analiza pipes, '&&' o ';' y muestra los ficheros reales que afectan los
+    comandos destructivos (mv, rm, cp, ...) sin alterarlos.
+    """
+    # Previsualización específica de 'limpiar': lista .tmp/.bak del directorio {1}
+    if name == "limpiar" and action_args:
+        directory = Path(action_args[0]).expanduser()
+        trash = os.environ.get("FSORT_TRASH_DIR", "./trash")
+        if not directory.is_dir():
+            cprint(f"  [DRY-RUN] el directorio no existe: {directory}")
+            return
+        matches = sorted(
+            [f for f in directory.glob("*") if f.is_file() and f.suffix in (".tmp", ".bak")])
+        if not matches:
+            cprint(f"  [DRY-RUN] nada que limpiar en {directory} (no hay .tmp ni .bak)")
+        else:
+            cprint(f"  [DRY-RUN] movería a la papelera ({trash}):")
+            for f in matches:
+                cprint(f"    - {f}")
+            cprint(f"  [DRY-RUN] pediría confirmación interactiva antes de mover.")
+        return
+
+    try:
+        segments = shlex.split(command)
+    except ValueError:
+        cprint("  (no se pudo analizar el comando; omite la simulación detallada)")
+        return
+
+    # Dividir en segmentos por operadores de shell básicos
+    groups, current = [], []
+    i = 0
+    while i < len(segments):
+        tok = segments[i]
+        if tok in ("&&", "||", ";", "|"):
+            if current:
+                groups.append(current)
+                current = []
+            i += 1
+            continue
+        current.append(tok)
+        i += 1
+    if current:
+        groups.append(current)
+
+    any_destructive = False
+    for group in groups:
+        if not group:
+            continue
+        program = Path(group[0]).name
+        if program not in destructive_commands:
+            continue
+        any_destructive = True
+        paths = [a for a in group[1:] if not a.startswith("-")]
+        expanded = []
+        for a in paths:
+            if any(c in a for c in "*?["):
+                if os.path.isabs(a):
+                    base, pattern = "/", a.lstrip("/")
+                else:
+                    base, pattern = ".", a
+                matched = sorted(
+                    os.path.join(base, m) for m in glob.glob(pattern, root_dir=base))
+                expanded.extend(matched or [a])
+            else:
+                expanded.append(a)
+        if program in ("mv", "cp", "rsync"):
+            if len(expanded) >= 2:
+                dest = expanded[-1]
+                for src in expanded[:-1]:
+                    verb = "movería" if program == "mv" else "copiaría"
+                    cprint(f"  [DRY-RUN] {verb}: {src} -> {dest}")
+            else:
+                cprint(f"  [DRY-RUN] {program} {' '.join(expanded)}")
+        elif program in ("rm", "rmdir"):
+            for p in expanded:
+                cprint(f"  [DRY-RUN] eliminaría: {p}")
+        else:
+            cprint(f"  [DRY-RUN] {program} {' '.join(expanded)}")
+
+    if not any_destructive:
+        cprint("  (el comando no parece modificar archivos; no hay nada que simular)")
+
+
+def run_python_action(name: str, action: dict, args: list, dry_run: bool = False):
+    """Ejecuta una acción de tipo 'python' llamando a la función indicada en 'func'."""
+    func_name = action.get("func")
+    if not func_name:
+        raise ActionFuncMissingError(
+            f"la acción '{name}' (tipo 'python') no define el campo 'func'")
+
+    module = sys.modules[__name__]
+    func = getattr(module, func_name, None)
+    if not callable(func):
+        raise ActionFuncNotFoundError(
+            f"la función '{func_name}' de la acción '{name}' no existe en fsort.py")
+
+    kwargs = dict(action.get("kwargs") or {})
+    kwargs["dry_run"] = dry_run
+
+    if func is move_items:
+        if len(args) < 2:
+            raise InvalidArgumentError(
+                f"'{name}': se necesitan al menos un elemento y un directorio destino")
+        items = args[:-1]
+        raw_dest = Path(args[-1]).expanduser()
+        if not raw_dest.exists():
+            raise DestinationNotFoundError(str(raw_dest))
+        dest = raw_dest.resolve()
+        func(items, dest, **kwargs)
+    elif func is empty_trash:
+        directory = Path(args[0]).expanduser() if args else None
+        func(directory, **kwargs)
+    elif func is summarize_file:
+        if not args:
+            raise InvalidArgumentError(
+                f"'{name}': falta el archivo (fsort.py {name} <archivo> [destino.txt])")
+        path = Path(args[0]).expanduser()
+        output = Path(args[1]).expanduser() if len(args) > 1 else None
+        func(path, output, **kwargs)
+    elif func is largest_files:
+        if not args:
+            raise InvalidArgumentError(
+                f"'{name}': falta el directorio (fsort.py {name} <directorio> [top])")
+        directory = _checked_dir(args[0], name)
+        if len(args) > 1:
+            kwargs["top"] = args[1]
+        func(directory, **kwargs)
+    elif func is clean_temp:
+        if not args:
+            raise InvalidArgumentError(
+                f"'{name}': falta el directorio (fsort.py {name} <directorio>)")
+        directory = _checked_dir(args[0], name)
+        kwargs["assume_yes"] = (os.environ.get("FSORT_YES") == "1")
+        func(directory, **kwargs)
+    else:
+        directory = _checked_dir(args[0] if args else None, name)
+        if func is flatten_dir:
+            if len(args) < 2:
+                raise InvalidArgumentError(
+                    f"'{name}': falta el destino "
+                    f"(fsort.py {name} <directorio> <destino>)")
+            raw_dest = Path(args[1]).expanduser()
+            if not raw_dest.exists():
+                raise DestinationNotFoundError(str(raw_dest))
+            dest = raw_dest.resolve()
+            func(directory, dest, **kwargs)
+        else:
+            func(directory, **kwargs)
+
+
+def sort_files(directory: Path, dry_run: bool = False, copy: bool = False, recursive: bool = False):
+    """
+    Ordena archivos en un directorio por su extensión.
+    Crea una carpeta por extensión y mueve/copia los archivos.
+    """
+    if not directory.exists():
+        raise DirectoryNotFoundError(str(directory))
+
+    if not directory.is_dir():
+        raise NotADirectoryError_(str(directory))
+    
+    # Obtener archivos (solo archivos, no directorios)
+    if recursive:
+        files = [f for f in directory.rglob("*") if f.is_file()]
+    else:
+        files = [f for f in directory.iterdir() if f.is_file()]
+    
+    # Excluir el propio script si está en el directorio
+    script_name = Path(__file__).name
+    files = [f for f in files if f.name != script_name and f.name != "fsort.py"]
+    
+    if not files:
+        cprint("No hay archivos para ordenar.")
+        return
+    
+    moved_count = 0
+    for file_path in files:
+        # Obtener extensión
+        extension = file_path.suffix.lower()
+        if not extension:
+            ext_folder = "sin_extension"
+        else:
+            # Quitar el punto y usarlo como nombre de carpeta
+            ext_folder = extension[1:]  # ej: .txt -> txt
+        
+        # Crear carpeta destino: en modo recursivo se consolida todo en <raiz>/<ext>/
+        dest_folder = directory / ext_folder
+        dest_file = dest_folder / file_path.name
+        
+        # Evitar mover un archivo que ya esta en su carpeta de extension destino
+        if file_path.parent == dest_folder:
+            continue
+
+        # En recursivo, saltar archivos que ya cuelgan de <raiz>/<ext>/ (ya consolidados
+        # en una pasada anterior o de un 'ordenar' previo): evita re-mover y bucles.
+        if recursive:
+            try:
+                file_path.relative_to(dest_folder)
+                continue
+            except ValueError:
+                pass
+
+
+        if dry_run:
+            action = "Copiaría" if copy else "Movería"
+            cprint(f"[DRY-RUN] {action}: {file_path} -> {dest_file}")
+            continue
+        
+        # Crear directorio si no existe
+        dest_folder.mkdir(parents=True, exist_ok=True)
+        
+        # Manejar colisiones de nombre
+        counter = 1
+        original_dest = dest_file
+        while dest_file.exists():
+            stem = original_dest.stem
+            suffix = original_dest.suffix
+            dest_file = dest_folder / f"{stem}_{counter}{suffix}"
+            counter += 1
+        
+        try:
+            if copy:
+                shutil.copy2(file_path, dest_file)
+                cprint(f"Copiado: {file_path.name} -> {ext_folder}/")
+            else:
+                shutil.move(str(file_path), str(dest_file))
+                cprint(f"Movido: {file_path.name} -> {ext_folder}/")
+            moved_count += 1
+        except Exception as e:
+            raise OperationError(f"{file_path}: {e}")
+    
+    if not dry_run:
+        action = "copiados" if copy else "movidos"
+        cprint(f"\nCompletado: {moved_count} archivo(s) {action}.")
+    else:
+        cprint("\n[DRY-RUN] Simulación completada. Usa sin --dry-run para aplicar los cambios.")
+
+
+def flatten_dir(directory: Path, dest: Path, dry_run: bool = False, copy: bool = False, remove_empty: bool = True):
+    """
+    Vacía las subcarpetas de un directorio moviendo (o copiando) sus archivos
+    a un directorio destino.
+    """
+    if not directory.exists():
+        raise DirectoryNotFoundError(str(directory))
+
+    if not directory.is_dir():
+        raise NotADirectoryError_(str(directory))
+
+    dest.mkdir(parents=True, exist_ok=True)
+
+    subdirs = [d for d in directory.iterdir() if d.is_dir()]
+    if not subdirs:
+        cprint("No hay subcarpetas que vaciar.")
+        return
+
+    moved_count = 0
+    for subdir in subdirs:
+        for file_path in subdir.rglob("*"):
+            if not file_path.is_file():
+                continue
+
+            dest_file = dest / file_path.name
+
+            if file_path.parent == dest:
+                continue
+
+            if dry_run:
+                action = "Copiaría" if copy else "Movería"
+                cprint(f"[DRY-RUN] {action}: {file_path} -> {dest_file}")
+                continue
+
+            # Manejar colisiones de nombre
+            counter = 1
+            original_dest = dest_file
+            while dest_file.exists():
+                stem = original_dest.stem
+                suffix = original_dest.suffix
+                dest_file = dest / f"{stem}_{counter}{suffix}"
+                counter += 1
+
+            try:
+                if copy:
+                    shutil.copy2(file_path, dest_file)
+                    cprint(f"Copiado: {file_path.relative_to(directory)} -> {dest_file.name}")
+                else:
+                    shutil.move(str(file_path), str(dest_file))
+                    cprint(f"Movido: {file_path.relative_to(directory)} -> {dest_file.name}")
+                moved_count += 1
+            except Exception as e:
+                raise OperationError(f"{file_path}: {e}")
+
+    if dry_run:
+        cprint("\n[DRY-RUN] Simulación completada. Usa sin --dry-run para aplicar los cambios.")
+        return
+
+    if remove_empty and not copy:
+        for subdir in sorted(subdirs, key=lambda d: len(d.parts), reverse=True):
+            leftovers = [f for f in subdir.rglob("*") if f.is_file()]
+            if not leftovers:
+                try:
+                    shutil.rmtree(subdir)
+                    cprint(f"Eliminada carpeta vacía: {subdir.relative_to(directory)}/")
+                except Exception as e:
+                    raise OperationError(f"no se pudo eliminar {subdir}: {e}")
+
+    cprint(f"\nCompletado: {moved_count} archivo(s) {'copiados' if copy else 'movidos'}.")
+
+
+def move_items(items: list, dest: Path, dry_run: bool = False, copy: bool = False):
+    """
+    Mueve (o copia) una lista de archivos o carpetas a un directorio destino.
+    """
+    if not dest.exists():
+        raise DestinationNotFoundError(str(dest))
+
+    if not dest.is_dir():
+        raise NotADirectoryError_(str(dest))
+
+    moved_count = 0
+    for item in items:
+        path = Path(item).expanduser()
+        if not path.exists():
+            cprint(f"Error: {path} no existe.")
+            continue
+
+        resolved_item = path.resolve()
+        if resolved_item == dest.resolve():
+            cprint(f"Omitido: {path.name} ya está en el destino.")
+            continue
+        if resolved_item.parent == dest.resolve():
+            cprint(f"Omitido: {path.name} ya está en el destino.")
+            continue
+
+        dest_file = dest / path.name
+
+        if dry_run:
+            action = "Copiaría" if copy else "Movería"
+            cprint(f"[DRY-RUN] {action}: {path} -> {dest_file}")
+            continue
+
+        # Manejar colisiones de nombre
+        counter = 1
+        original_dest = dest_file
+        while dest_file.exists():
+            if path.is_dir():
+                dest_file = dest / f"{original_dest.name}_{counter}"
+            else:
+                dest_file = dest / f"{original_dest.stem}_{counter}{original_dest.suffix}"
+            counter += 1
+
+        try:
+            if copy:
+                if path.is_dir():
+                    shutil.copytree(path, dest_file)
+                else:
+                    shutil.copy2(path, dest_file)
+                cprint(f"Copiado: {path.name} -> {dest}/")
+            else:
+                shutil.move(str(path), str(dest_file))
+                cprint(f"Movido: {path.name} -> {dest}/")
+            moved_count += 1
+        except Exception as e:
+            raise OperationError(f"{path}: {e}")
+
+    if dry_run:
+        cprint("\n[DRY-RUN] Simulación completada. Usa sin --dry-run para aplicar los cambios.")
+    else:
+        cprint(f"\nCompletado: {moved_count} elemento(s) {'copiados' if copy else 'movidos'}.")
+
+
+def _human_size(num: float) -> str:
+    """Formatea un número de bytes a una unidad legible."""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(num) < 1024:
+            return f"{num:.1f} {unit}" if unit != "B" else f"{int(num)} B"
+        num /= 1024
+    return f"{num:.1f} PB"
+
+
+def find_duplicates(directory: Path, dry_run: bool = False, delete: bool = False,
+                    interactive: bool = False, recursive: bool = True, min_size: int = 1):
+    """
+    Detecta archivos duplicados (mismo contenido) comparando primero el tamaño y
+    luego el hash SHA-256. Agrupa los duplicados y muestra cuáles conservar.
+    Con 'delete=True' elimina los redundantes (conserva el más antiguo).
+    Con 'interactive=True' permite elegir qué copia conservar en cada grupo.
+    """
+    if not directory.exists():
+        raise DirectoryNotFoundError(str(directory))
+
+    if not directory.is_dir():
+        raise NotADirectoryError_(str(directory))
+
+    # Excluir el propio script si está en el directorio
+    script_name = Path(__file__).name
+    if recursive:
+        files = [f for f in directory.rglob("*") if f.is_file()]
+    else:
+        files = [f for f in directory.iterdir() if f.is_file()]
+    files = [f for f in files if f.name != script_name and f.name != "fsort.py"]
+
+    # Paso 1: agrupar por tamaño (descarta comparaciones de hash costosas)
+    by_size: dict = {}
+    for file_path in files:
+        try:
+            size = file_path.stat().st_size
+        except OSError:
+            continue
+        if size < min_size:
+            continue
+        by_size.setdefault(size, []).append(file_path)
+
+    # Paso 2: calcular hash solo a los tamaños con más de un candidato
+    by_hash: dict = {}
+    for size, candidates in by_size.items():
+        if len(candidates) < 2:
+            continue
+        for file_path in candidates:
+            digest = _sha256(file_path)
+            if digest is None:
+                continue
+            by_hash.setdefault((size, digest), []).append(file_path)
+
+    groups = [paths for paths in by_hash.values() if len(paths) > 1]
+
+    if not groups:
+        cprint("No se encontraron archivos duplicados.")
+        return
+
+    groups.sort(key=lambda paths: paths[0].stat().st_size * (len(paths) - 1), reverse=True)
+
+    interactive = bool(interactive)
+    total_groups = len(groups)
+    wasted = 0
+    deleted_count = 0
+    # Sin TTY (p. ej. entrada pipeada) no se puede preguntar: se actúa en lote
+    interactive = interactive and not dry_run and sys.stdin.isatty()
+
+    for idx, paths in enumerate(groups, 1):
+        size = paths[0].stat().st_size
+        paths_sorted = sorted(paths, key=lambda p: p.stat().st_mtime)
+
+        cprint(f"[{idx}/{total_groups}] {_human_size(size)} c/u — {len(paths_sorted)} copias:")
+
+        if interactive:
+            cprint("  Elige qué copia conservar:")
+            for n, p in enumerate(paths_sorted, 1):
+                cprint(f"    {n}) {p}")
+            while True:
+                try:
+                    raw = input(f"  Opción [1-{len(paths_sorted)}] "
+                                "(Enter=1, s=saltar grupo, q=terminar): ").strip().lower()
+                except EOFError:
+                    cprint("\nEntrada interrumpida: se detiene la revisión de grupos.")
+                    interactive = False
+                    raw = "q"
+                if raw == "":
+                    choice = 1
+                    break
+                if raw == "q":
+                    cprint("\nOperación cancelada por el usuario.")
+                    raise SystemExit(0)
+                if raw in ("s", "n", "skip"):
+                    choice = None
+                    break
+                if raw.isdigit() and 1 <= int(raw) <= len(paths_sorted):
+                    choice = int(raw)
+                    break
+                cprint(f"  Opción no válida. Elige un número entre 1 y {len(paths_sorted)}, "
+                      "'s' para saltar o 'q' para salir.")
+            if choice is None:
+                for p in paths_sorted:
+                    cprint(f"  Duplicado (omitido): {p}")
+                cprint()
+                continue
+            keep = paths_sorted[choice - 1]
+            redundant = [p for p in paths_sorted if p != keep]
+            cprint(f"  Conservar: {keep}")
+        else:
+            # Conservar el más antiguo (menor mtime) como "original"
+            keep, *redundant = paths_sorted
+            cprint(f"  Conservar: {keep}")
+
+        wasted += size * len(redundant)
+
+        for dup in redundant:
+            if delete or interactive:
+                if dry_run:
+                    cprint(f"  [DRY-RUN] Eliminaría: {dup}")
+                    continue
+                try:
+                    dup.unlink()
+                    cprint(f"  Eliminado: {dup}")
+                    deleted_count += 1
+                except Exception as e:
+                    raise OperationError(f"{dup}: {e}")
+            else:
+                cprint(f"  Duplicado: {dup}")
+        cprint()
+
+    cprint()
+    if delete or deleted_count:
+        if dry_run:
+            cprint(f"[DRY-RUN] {total_groups} grupo(s) de duplicados. "
+                  f"Se liberarían {_human_size(wasted)}. "
+                  "Usa sin --dry-run para eliminar los duplicados.")
+        else:
+            cprint(f"Completado: {deleted_count} archivo(s) duplicado(s) eliminados. "
+                  f"Liberado: {_human_size(wasted)}.")
+    else:
+        cprint(f"Encontrados {total_groups} grupo(s) de duplicados. "
+              f"Espacio recuperable: {_human_size(wasted)}.")
+        cprint("Usa 'duplicados-eliminar' para eliminar los redundantes.")
+
+
+def _sha256(file_path: Path):
+    """Devuelve el SHA-256 del contenido del archivo, o None si no se puede leer."""
+    hasher = hashlib.sha256()
+    try:
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                hasher.update(chunk)
+    except OSError:
+        return None
+    return hasher.hexdigest()
+
+
+PLAIN_TEXT_SUFFIXES = {
+    ".txt", ".md", ".markdown", ".rst", ".log", ".csv", ".tsv", ".json",
+    ".xml", ".html", ".htm", ".tex", ".py", ".js", ".ts", ".c", ".cpp",
+    ".h", ".hpp", ".java", ".kt", ".go", ".rs", ".rb", ".php", ".sh",
+    ".yml", ".yaml", ".ini", ".cfg", ".conf", ".epub",
+}
+
+
+def _extract_text(file_path: Path) -> str:
+    """Extrae el texto del archivo usando el lector adecuado según su extensión."""
+    suffix = file_path.suffix.lower()
+
+    if suffix in PLAIN_TEXT_SUFFIXES or suffix == "":
+        return _read_text_file(file_path)
+
+    if suffix == ".pdf":
+        return _extract_with_tool("pdftotext", ["pdftotext", "-layout", str(file_path), "-"],
+                                  file_path)
+
+    if suffix in (".docx", ".odt", ".rtf", ".fodt", ".ott", ".org"):
+        return _extract_with_tool("pandoc", ["pandoc", "-t", "plain", str(file_path)],
+                                  file_path)
+
+    raise UnsupportedFileFormatError(
+        f"{file_path.name} (extensión '{suffix}'). "
+        "Formatos compatibles: texto plano (.txt, .md, .csv, .json, .html, ...), "
+        ".pdf (con 'pdftotext'), .docx/.odt/.rtf (con 'pandoc').")
+
+
+def _read_text_file(file_path: Path) -> str:
+    try:
+        size = file_path.stat().st_size
+        if size == 0:
+            raise FileReadError(f"{file_path} está vacío")
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError as e:
+        raise FileReadError(f"{file_path}: {e}")
+
+
+def _extract_with_tool(program: str, argv: list, file_path: Path) -> str:
+    """Ejecuta una herramienta externa (pdftotext, pandoc) y devuelve su stdout."""
+    try:
+        result = subprocess.run(argv, capture_output=True, timeout=120, check=False)
+    except FileNotFoundError:
+        raise UnsupportedFileFormatError(
+            f"no se encontró la herramienta '{program}' necesaria para leer "
+            f"{file_path.name}. Instálala o convierte el archivo a .txt.")
+    except PermissionError:
+        raise UnsupportedFileFormatError(
+            f"sin permisos para ejecutar '{program}'")
+    except subprocess.TimeoutExpired:
+        raise FileReadError(f"'{program}' tardó demasiado procesando {file_path.name}")
+
+    if result.returncode != 0:
+        err = (result.stderr or b"").decode("utf-8", "replace").strip()[:300]
+        raise FileReadError(f"'{program}' no pudo con {file_path.name}: "
+                            f"{err or f'código {result.returncode}'}")
+
+    out = (result.stdout or b"").decode("utf-8", "replace")
+    if not out.strip():
+        raise FileReadError(
+            f"'{program}' no obtuvo texto de {file_path.name} "
+            "(¿PDF escaneado/sin capa de texto?)")
+    return out
+
+
+def summarize_file(file_path: Path, output: Path = None,
+                   dry_run: bool = False, max_chars: int = None):
+    """
+    Resume con la IA de Simarro el contenido de un archivo de texto y guarda el
+    resumen en un .txt junto al original (o en la ruta indicada).
+    """
+    if file_path is None:
+        raise InvalidArgumentError("falta el archivo (fsort.py resumir <archivo> [destino.txt])")
+
+    path = Path(file_path).expanduser()
+    if not path.exists():
+        raise FileReadError(f"{path} no existe")
+    if not path.is_file():
+        raise InvalidArgumentError(f"{path} no es un archivo")
+
+    limit = max_chars or SUMMARY_MAX_CHARS
+    if dry_run:
+        dest = output or path.with_name(f"{path.stem}_resumen.txt")
+        cprint(f"[DRY-RUN] Leería {path} ({_human_size(path.stat().st_size)}), "
+              f"enviaría hasta {limit:,} caracteres a la IA ({_ai_config()['model']}) "
+              f"y guardaría el resumen en {dest}.")
+        return
+
+    cprint(f"Extrayendo texto de {path}...")
+    text = _extract_text(path)
+
+    if not text.strip():
+        raise FileReadError(f"{path}: no se encontró texto que resumir")
+
+    truncated = False
+    if len(text) > limit:
+        cprint(f"Aviso: el documento tiene {len(text):,} caracteres y supera el limite "
+               f"de {limit:,} (FSORT_SUMMARY_MAX_CHARS); se resumira solo el inicio. "
+               "Sube el limite o reduce el archivo para un resumen completo.")
+        text = text[:limit]
+        truncated = True
+
+    cprint(f"Resumiendo {len(text):,} caracteres con la IA "
+          f"({_ai_config()['model']})...")
+
+    prompt = (
+        "Resume el siguiente documento. "
+        "Sigue EXACTAMENTE el formato de encabezados que se te indica en las "
+        "instrucciones de sistema.\n\n"
+        "--- INICIO DOCUMENTO ---\n"
+        f"{text}\n"
+        "--- FIN DOCUMENTO ---\n"
+    )
+    if truncated:
+        prompt += ("\n(El documento se truncó por límite de tamaño; resume solo "
+                   "lo visible sin mencionarlo.)\n")
+
+    summary = ask_ai(prompt, system_prompt=SUMMARY_SYSTEM_PROMPT)
+    if not summary.strip():
+        raise AIError("la IA devolvió un resumen vacío")
+
+    dest = Path(output).expanduser() if output else path.with_name(f"{path.stem}_resumen.txt")
+    if dest.suffix.lower() != ".txt":
+        dest = dest.with_suffix(".txt")
+    if dest.exists() and not dry_run:
+        counter = 1
+        original = dest
+        while dest.exists():
+            dest = original.with_name(f"{original.stem}_{counter}{original.suffix}")
+            counter += 1
+
+    header = (
+        f"Resumen de: {path.name}\n"
+        f"Generado: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+        f"Modelo: {_ai_config()['model']}\n"
+        + ("Advertencia: el documento original se truncó para el análisis.\n"
+           if truncated else "")
+        + "-" * 70 + "\n\n"
+    )
+
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(header + summary.strip() + "\n")
+    except OSError as e:
+        raise OperationError(f"no se pudo escribir {dest}: {e}")
+
+    cprint()
+    cprint(summary.strip())
+    cprint()
+    cprint(f"✓ Resumen guardado en {dest}")
+
+
+def _sha256(file_path: Path):
+    """Devuelve el SHA-256 del contenido del archivo, o None si no se puede leer."""
+    hasher = hashlib.sha256()
+    try:
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                hasher.update(chunk)
+    except OSError:
+        return None
+    return hasher.hexdigest()
+
+
+def _dir_size(path: Path) -> int:
+    """Suma el tamaño en bytes de todos los archivos dentro de un archivo o carpeta."""
+    if path.is_file():
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+    total = 0
+    for f in path.rglob("*"):
+        try:
+            if f.is_file():
+                total += f.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _match_name(name: str, pattern: str) -> bool:
+    """Indica si un nombre coincide con un patron glob (nombre o *.ext).
+
+    Un patron sin comodines ('pdf') coincide con la extension; uno con
+    comodines ('*.pdf', 'foto*') se evalua como glob sobre el nombre.
+    """
+    import fnmatch
+    lowered = name.lower()
+    p = pattern.lower()
+    if p.startswith("*"):
+        return lowered.endswith(p[1:])
+    if any(c in p for c in "*?["):
+        return fnmatch.fnmatch(lowered, p)
+    return lowered == p or lowered == f".{p.lstrip('.')}" or lowered.endswith(f".{p.lstrip('.')}")
+
+
+def largest_files(directory: Path, top: int = 10, dry_run: bool = False,
+                  delete: bool = False, ext: str = "*", assume_yes: bool = False):
+    """
+    Lista los archivos más grandes de un directorio (ordenados por tamaño).
+    'ext' permite filtrar por extensión (ej: 'pdf'). Con 'delete=True' elimina los N.
+    Con 'delete=True' pide confirmacion salvo dry_run o assume_yes (o FSORT_YES=1).
+    """
+    if not directory.exists():
+        raise DirectoryNotFoundError(str(directory))
+
+    if not directory.is_dir():
+        raise NotADirectoryError_(str(directory))
+
+    try:
+        top = int(top)
+    except (TypeError, ValueError):
+        raise InvalidArgumentError(f"el número de archivos debe ser un entero, no '{top}'")
+
+    if top <= 0:
+        raise InvalidArgumentError(f"el número de archivos debe ser mayor que 0, no '{top}'")
+
+    script_name = Path(__file__).name
+
+    entries = []
+    for file_path in directory.rglob("*"):
+        if not file_path.is_file():
+            continue
+        if file_path.name == script_name or file_path.name == "fsort.py":
+            continue
+        if not _match_name(file_path.name, ext):
+            continue
+        try:
+            size = file_path.stat().st_size
+        except OSError:
+            continue
+        entries.append((size, file_path))
+
+    if not entries:
+        cprint("No hay archivos que analizar.")
+        return
+
+    entries.sort(key=lambda item: item[0], reverse=True)
+    selected = entries[:top]
+    total = sum(size for size, _ in selected)
+
+    cprint(f"Top {len(selected)} archivo(s) más grandes en {directory}"
+          + (f" (extensión: {ext})" if ext != "*" else "") + ":")
+    for rank, (size, file_path) in enumerate(selected, 1):
+        cprint(f"  {rank:>2}. {_human_size(size):>9}  {file_path}")
+
+    cprint()
+    if delete and not dry_run:
+        cprint(f"Se eliminaran {len(selected)} archivo(s) ({_human_size(total)}).")
+        if not (assume_yes or os.environ.get("FSORT_YES") == "1"):
+            if not _confirm("Confirmar eliminacion? [s/N] "):
+                cprint("Cancelado: no se ha eliminado nada.")
+                return
+        else:
+            cprint("  (--yes/FSORT_YES: confirmado automaticamente)")
+    for size, file_path in selected:
+        if delete:
+            if dry_run:
+                cprint(f"[DRY-RUN] Eliminaría: {file_path}")
+                continue
+            try:
+                file_path.unlink()
+                cprint(f"Eliminado: {file_path}")
+            except Exception as e:
+                raise OperationError(f"{file_path}: {e}")
+
+    if delete:
+        if dry_run:
+            cprint(f"[DRY-RUN] Se liberarían {_human_size(total)}. "
+                   "Usa sin --dry-run para eliminar.")
+        else:
+            cprint(f"Completado: liberado {_human_size(total)}.")
+    else:
+        cprint(f"Tamaño total de los seleccionados: {_human_size(total)}.")
+
+
+# Patrones de basura reconocidos por 'limpiar' (nombre glob o sufijo si empieza por '*')
+TEMP_PATTERNS = (
+    "*.tmp", "*.temp", "*~", "*.bak", "*.old",
+    "*.swp", "*.swo", "*.swn",
+    "*.log",
+    ".DS_Store", "Thumbs.db", "desktop.ini",
+)
+
+
+def clean_temp(directory: Path, dry_run: bool = False, assume_yes: bool = False,
+               recursive: bool = True):
+    """
+    Mueve archivos temporales y de respaldo del directorio (recursivo por defecto)
+    a la papelera (FSORT_TRASH_DIR o ./trash, que se crea si falta).
+
+    Reconoce: .tmp .temp ~ .bak .old .swp .swo .swn .log y basura de sistema
+    (.DS_Store, Thumbs.db, desktop.ini). Pide confirmacion salvo --dry-run,
+    --yes/-y o FSORT_YES=1. Sin TTY no confirma: no mueve nada.
+    """
+    import fnmatch
+    if not directory.exists():
+        raise DirectoryNotFoundError(str(directory))
+    if not directory.is_dir():
+        raise NotADirectoryError_(str(directory))
+
+    trash = Path(os.environ.get("FSORT_TRASH_DIR", "trash")).expanduser()
+
+    def is_temp(p: Path) -> bool:
+        for pat in TEMP_PATTERNS:
+            if pat.startswith("*"):
+                if p.name.lower().endswith(pat[1:].lstrip("*")):
+                    return True
+            elif fnmatch.fnmatch(p.name.lower(), pat.lower()):
+                return True
+        return False
+
+    walker = directory.rglob("*") if recursive else directory.iterdir()
+    candidates = [p for p in walker if p.is_file() and is_temp(p)]
+
+    # No tocar la propia papelera si cuelga del directorio
+    try:
+        trash_res = trash.resolve()
+    except OSError:
+        trash_res = trash
+
+    def in_trash(p: Path) -> bool:
+        try:
+            p.resolve().relative_to(trash_res)
+            return True
+        except (ValueError, OSError):
+            return False
+
+    candidates = [p for p in candidates if not in_trash(p)]
+
+    if not candidates:
+        cprint(f"Nada que limpiar en {directory} (no hay archivos temporales).")
+        return
+
+    cprint(f"Se moverian a la papelera ({trash}) {len(candidates)} archivo(s):")
+    for p in sorted(candidates):
+        cprint(f"  {p}")
+    cprint()
+
+    if dry_run:
+        cprint(f"[DRY-RUN] {len(candidates)} archivo(s) se moverian a {trash}. "
+               "Usa sin --dry-run para aplicar.")
+        return
+
+    if not (assume_yes or os.environ.get("FSORT_YES") == "1"):
+        if not _confirm("Confirmar? [s/N] "):
+            cprint("Cancelado: no se ha movido nada.")
+            return
+    else:
+        cprint("  (--yes/FSORT_YES: confirmado automaticamente)")
+
+    trash.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for p in candidates:
+        dest = trash / p.name
+        if dest.exists():
+            counter = 1
+            original = dest
+            while dest.exists():
+                dest = original.with_name(f"{original.stem}_{counter}{original.suffix}")
+                counter += 1
+        try:
+            shutil.move(str(p), str(dest))
+            cprint(f"Movido: {p} -> {trash}/")
+            moved += 1
+        except Exception as e:
+            raise OperationError(f"{p}: {e}")
+
+    cprint(f"\nCompletado: {moved} archivo(s) movidos a {trash}.")
+
+
+def empty_trash(directory: Path = None, dry_run: bool = False,
+                top: int = 0, delete: bool = False, ext: str = "*"):
+    """
+    Vacía la papelera eliminando de forma permanente su contenido.
+    Por defecto usa FSORT_TRASH_DIR o './trash'. Con 'top=N' solo los N más grandes.
+    Con 'delete=False' (vista por defecto) solo lista el contenido sin borrar.
+    """
+    trash = directory or Path(os.environ.get("FSORT_TRASH_DIR", "trash")).expanduser()
+
+    if not trash.exists():
+        cprint(f"La papelera ({trash}) no existe. Nada que vaciar.")
+        return
+
+    trash = trash.resolve()
+
+    if not trash.is_dir():
+        raise NotADirectoryError_(str(trash))
+
+    # Contenido de primer nivel (no la carpeta raíz de la papelera)
+    all_entries = list(trash.iterdir())
+    entries = [p for p in all_entries if _match_name(p.name, ext)]
+    skipped_by_ext = [p for p in all_entries if not _match_name(p.name, ext)]
+
+    if not entries:
+        if skipped_by_ext:
+            cprint(f"La papelera ({trash}) no está vacía, pero ningún elemento coincide "
+                  f"con el filtro '{ext}' ({len(skipped_by_ext)} dentro).")
+        else:
+            cprint(f"La papelera ({trash}) ya está vacía.")
+        return
+
+    sized = [(_dir_size(p), p) for p in entries]
+    sized.sort(key=lambda item: item[0], reverse=True)
+
+    try:
+        top = int(top)
+    except (TypeError, ValueError):
+        raise InvalidArgumentError(f"el número de archivos debe ser un entero, no '{top}'")
+
+    # Que se queda fuera de esta pasada (para no afirmar 'vaciada' en falso)
+    if top > 0:
+        skipped = [p for _, p in sized[top:]]
+        sized = sized[:top]
+    else:
+        skipped = []
+    skipped += skipped_by_ext
+
+    do_delete = delete
+
+    if do_delete:
+        cprint(f"Vaciando la papelera ({trash}):")
+    else:
+        cprint(f"Contenido de la papelera ({trash}):")
+
+    freed = 0
+    count = 0
+    for size, entry in sized:
+        label = f"{entry.name}/" if entry.is_dir() else entry.name
+        if do_delete:
+            if dry_run:
+                cprint(f"  [DRY-RUN] Eliminaría: {label} ({_human_size(size)})")
+                freed += size
+                count += 1
+                continue
+            try:
+                if entry.is_dir():
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+                cprint(f"  Eliminado: {label} ({_human_size(size)})")
+                freed += size
+                count += 1
+            except Exception as e:
+                raise OperationError(f"{entry}: {e}")
+        else:
+            cprint(f"  {label} ({_human_size(size)})")
+            freed += size
+            count += 1
+
+    cprint()
+    # ¿Queda algo dentro tras la pasada? (no afirmar 'vaciada' en falso con filtros/top)
+    if do_delete and dry_run:
+        remaining_count = len(skipped)          # no se ha borrado nada realmente
+    elif do_delete:
+        try:
+            remaining_count = sum(1 for _ in trash.iterdir())
+        except OSError:
+            remaining_count = 0
+    else:
+        remaining_count = len(skipped)
+
+    if not do_delete:
+        total_all = sum(_dir_size(p) for p in all_entries)
+        cprint(f"{count} elemento(s) listados. Total papelera: {_human_size(total_all)}. "
+              "Usa 'vaciar-papelera-ya' para eliminar el contenido.")
+    elif dry_run:
+        base = f"[DRY-RUN] {count} elemento(s). Se liberarían {_human_size(freed)}."
+        base += (f" Quedarían {remaining_count} elemento(s) sin tocar "
+                 "(filtrados por 'ext' o fuera del top)." if remaining_count
+                 else " La papelera quedaría vacía.")
+        cprint(base + " Usa sin --dry-run para vaciar la papelera.")
+    else:
+        if remaining_count:
+            cprint(f"Papelera NO vaciada por completo: {count} elemento(s) eliminados "
+                  f"(liberado {_human_size(freed)}); quedan {remaining_count} dentro "
+                  "(filtrados o fuera del top). Repite sin filtros para vaciar del todo.")
+        else:
+            cprint(f"Papelera vaciada: {count} elemento(s) eliminados. Liberado: {_human_size(freed)}.")
+
+
+def _extract_actions_file(argv: list):
+    """Extrae el valor de --actions-file de argv sin usar argparse (argparse lo confundiría con --actions)."""
+    path = None
+    rest = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--actions-file":
+            if i + 1 < len(argv):
+                path = argv[i + 1]
+                i += 2
+                continue
+            i += 1
+            continue
+        if a.startswith("--actions-file="):
+            path = a.split("=", 1)[1]
+            i += 1
+            continue
+        rest.append(a)
+        i += 1
+    return path, rest
+
+
+def _extract_assistant(argv: list):
+    """Extrae el texto de --ai/--pregunta (o --ia) de argv, sin usar argparse.
+
+    Si '--ai' aparece sin texto, devuelve '' (cadena vacía) para indicar que se
+    debe preguntar de forma interactiva.
+    """
+    text = None
+    rest = []
+    i = 0
+    flags = ("--ai", "--ia", "--pregunta", "--pregunta-ia", "-P")
+    prefixes = ("--ai=", "--ia=", "--pregunta=", "--pregunta-ia=", "-P=")
+    while i < len(argv):
+        a = argv[i]
+        if a in flags:
+            nxt = argv[i + 1] if i + 1 < len(argv) else None
+            if nxt is not None and not nxt.startswith("-"):
+                text = nxt
+                i += 2
+                continue
+            if text is None:
+                text = ""
+            i += 1
+            continue
+        if a.startswith(prefixes):
+            text = a.split("=", 1)[1] or ""
+            i += 1
+            continue
+        rest.append(a)
+        i += 1
+    return text, rest
+
+
+def _ssl_context():
+    """Devuelve un SSLContext que confía en el CA de Simarro si está disponible."""
+    ca = Path(os.environ.get("FSORT_AI_CA", Path.home() / ".config/opencode/ca-simarro.crt"))
+    ca = Path(ca).expanduser() if not os.environ.get("FSORT_AI_CA") else Path(ca)
+    if ca.exists():
+        ctx = ssl.create_default_context(cafile=str(ca))
+    else:
+        ctx = ssl.create_default_context()
+    if os.environ.get("FSORT_AI_INSECURE") == "1":
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+def _ai_config() -> dict:
+    return {
+        "base_url": os.environ.get("FSORT_AI_URL", "https://ia.simarro/llmapi/v1"),
+        "api_key": os.environ.get("FSORT_AI_KEY", ""),
+        "model": os.environ.get("FSORT_AI_MODEL", "Qwen38-DualSpark-medium"),
+    }
+
+
+def ask_ai(question: str, system_prompt: str = AI_SYSTEM_PROMPT) -> str:
+    """Envía la pregunta a la IA de Simarro (API OpenAI-compatible) y devuelve su respuesta."""
+    cfg = _ai_config()
+    if not cfg["api_key"]:
+        raise AIError("falta la clave de API. Define FSORT_AI_KEY con tu clave "
+                      "(ej: export FSORT_AI_KEY='sk-...')")
+
+    url = cfg["base_url"].rstrip("/") + "/chat/completions"
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": question})
+    body = jsonlib.dumps({
+        "model": cfg["model"],
+        "messages": messages,
+        "temperature": 0.6,
+    }).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST", headers={
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {cfg['api_key']}",
+    })
+    try:
+        with urllib.request.urlopen(req, context=_ssl_context(), timeout=120) as resp:
+            payload = jsonlib.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:300]
+        if e.code in (401, 403):
+            detail += " — revisa que FSORT_AI_KEY sea correcta"
+        raise AIError(f"HTTP {e.code} al consultar {url}: {detail}")
+    except urllib.error.URLError as e:
+        raise AIError(f"no se pudo conectar con {url} ({e.reason}). "
+                      "Comprueba tu conexión y FSORT_AI_URL")
+    except jsonlib.JSONDecodeError as e:
+        raise AIError(f"respuesta no es JSON válido: {e}")
+
+    try:
+        return payload["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, TypeError) as e:
+        raise AIError(f"respuesta inesperada de la API: {e}")
+
+
+def ai_assistant(question: str):
+    """Modo asistente (--ai): pregunta a la IA de Simarro y muestra la respuesta."""
+    cprint(f"Consultando la IA de Simarro ({_ai_config()['model']})...\n")
+    cprint(ask_ai(question))
+    cprint()
+
+
+def _is_dry(args, extra: list) -> bool:
+    """Detecta el modo simulación en cualquier posición (argparse o extra)."""
+    return bool(getattr(args, "dry_run", False)) or "-d" in extra or "--dry-run" in extra
+
+
+def main():
+    pre_ai, rest_argv = _extract_assistant(sys.argv[1:])
+    actions_file, rest_argv = _extract_actions_file(rest_argv)
+    actions_path = Path(actions_file).expanduser() if actions_file else ACTIONS_FILE
+    try:
+        actions = load_actions(actions_path)
+    except ActionsValidationError as e:
+        cprint(f"✗ Error: {e.message} ({e.detail}):")
+        for err in e.errors:
+            cprint(f"  - {err}")
+        cprint("\nCorrige el archivo de acciones y vuelve a intentarlo.")
+        raise SystemExit(1)
+    except FsortError as e:
+        _print_error(e)
+        raise SystemExit(1)
+
+    parser = argparse.ArgumentParser(
+        description="Ejecuta comandos definidos en actions.json (ordenar, vaciar, mover, info, ...) "
+                    "o consulta la IA de Simarro.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Ejemplos:
+  %(prog)s <comando> [args...]   # Ejecuta un comando de actions.json
+  %(prog)s ordenar ~/Descargas   # Ordena archivos por extensión
+  %(prog)s info ~/Descargas      # Lista el directorio
+  %(prog)s pdf-a-odt a.pdf ./out # Convierte PDF a ODT
+  %(prog)s --actions             # Lista los comandos disponibles
+  %(prog)s ordenar . --dry-run   # Simula sin aplicar cambios
+  %(prog)s --ai "¿Cómo ordeno mis descargas?"  # Pregunta a la IA de Simarro
+        """
+    )
+    parser.add_argument("command", nargs="*", metavar="COMANDO",
+                        help="Comando de actions.json seguido de sus argumentos")
+    parser.add_argument("--actions-file", metavar="RUTA", default=None,
+                        help="Usar un actions.json alternativo (por defecto, actions.json junto al script)")
+    parser.add_argument("-d", "--dry-run", action="store_true",
+                        help="Simular la operación sin mover/copiar archivos")
+    parser.add_argument("--actions", action="store_true",
+                        help="Listar los comandos personalizados de actions.json")
+    parser.add_argument("--yes", "-y", action="store_true",
+                        help="No pedir confirmacion en acciones destructivas "
+                             "(equivale a FSORT_YES=1)")
+    parser.add_argument("--ai", "--ia", "--pregunta", "-P", metavar="TEXTO",
+                        nargs="?", const="", default=None,
+                        help="Pregunta a la IA de Simarro y muestra la respuesta "
+                             "(requiere FSORT_AI_KEY; alias: -P/--ia/--pregunta)")
+
+    args, extra = parser.parse_known_args(rest_argv)
+
+    # --yes/-y global: confirma acciones destructivas sin preguntar
+    if getattr(args, "yes", False):
+        os.environ["FSORT_YES"] = "1"
+
+    # Combinar --ai/--ia/--pregunta: puede venir de argparse o del preprocesador.
+    question = args.ai if args.ai is not None else pre_ai
+    if question is not None:
+        if _is_dry(args, extra):
+            cprint(f"[DRY-RUN] Consultaría la IA de Simarro con la pregunta: "
+                  f"'{question.strip() or '(interactiva)'}'")
+            return
+        if not question.strip():
+            try:
+                question = input("Pregunta para la IA: ")
+            except EOFError:
+                cprint("✗ Error: no se recibió ninguna pregunta. "
+                      "Pásala como texto: fsort.py --ai \"tu pregunta\"",
+                      file=sys.stderr)
+                raise SystemExit(1)
+            if not question.strip():
+                cprint("✗ Error: la pregunta no puede estar vacía.", file=sys.stderr)
+                raise SystemExit(1)
+        try:
+            ai_assistant(question.strip())
+        except AIError as e:
+            _print_error(e)
+            raise SystemExit(1)
+        return
+
+    if not args.actions and not args.command:
+        parser.error("falta el comando (usa --actions para ver los disponibles)")
+
+    try:
+        dispatch(args, extra, actions)
+    except SystemExit:
+        raise
+    except (FsortError, InvalidArgumentError) as e:
+        _print_error(e)
+        raise SystemExit(1)
+    except Exception as e:
+        cprint(f"✗ Error inesperado ({e.__class__.__name__}): {e} "
+              "(revisa el comando o ejecuta con --actions para ver los disponibles)")
+        raise SystemExit(1)
+
+
+def _print_error(exc: FsortError):
+    cprint(f"✗ Error: {exc}")
+    hint = _suggest(str(exc))
+    if hint:
+        cprint(f"  Sugerencia:{hint}")
+
+
+def dispatch(args, extra: list, actions: dict):
+    # Las acciones ya se validaron (estructura, marcadores y funciones) al cargar el
+    # JSON en main()/load_actions(); no hace falta revalidar aqui (evita re-importar
+    # fsort.py por cada accion, que era el coste de la doble validacion).
+    if args.actions:
+        if not actions:
+            cprint("No hay acciones definidas en actions.json.")
+        else:
+            cprint("Acciones disponibles (actions.json):")
+            for name, action in actions.items():
+                desc = action.get("description", "") if isinstance(action, dict) else ""
+                cprint(f"  {name}: {desc}")
+        return
+
+    command, *action_args = args.command
+    action_args.extend(extra)
+
+    if command not in actions:
+        disponible = ", ".join(sorted(actions)) or "ninguna"
+        cprint(f"✗ Error: el comando '{command}' no existe en actions.json. "
+              f"Comandos disponibles: {disponible}.")
+        raise SystemExit(1)
+
+    dry_run = _is_dry(args, extra)
+    if dry_run and "-d" in extra:
+        action_args.remove("-d")
+
+    action = actions[command]
+    if not isinstance(action, dict):
+        raise InvalidActionError(
+            f"la acción '{command}' debe ser un objeto JSON, "
+            f"no '{type(action).__name__}'")
+
+    action_type = action.get("type")
+    if action_type == "python":
+        if action.get("func") == "move_items":
+            example = f"fsort.py {command} <elemento1> [elemento2 ...] <destino>"
+        elif action.get("func") == "flatten_dir":
+            example = f"fsort.py {command} <directorio> <destino>"
+        elif action.get("func") == "largest_files":
+            example = f"fsort.py {command} <directorio> [top]"
+        elif action.get("func") == "find_duplicates":
+            example = f"fsort.py {command} <directorio>"
+        elif action.get("func") == "empty_trash":
+            example = f"fsort.py {command} [papelera]"
+        elif action.get("func") == "summarize_file":
+            example = f"fsort.py {command} <archivo> [destino.txt]"
+        else:
+            example = f"fsort.py {command} <directorio>"
+    elif action_type == "command":
+        example = f"fsort.py {command} [arg...] (los argumentos sustituyen a {{1}}, {{2}}, ...)"
+    else:
+        example = ""
+
+    try:
+        run_action(command, action, action_args, dry_run)
+    except (InvalidArgumentError, DirectoryNotFoundError, DestinationNotFoundError) as e:
+        _print_error(e)
+        if example:
+            cprint(f"  Ejemplo: {example}")
+        raise SystemExit(1)
+    except FsortError as e:
+        _print_error(e)
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

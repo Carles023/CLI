@@ -1,0 +1,4 @@
+# Dev / tests
+# Instala: pip install -r requirements-dev.txt  (o pip install -e ".[dev]")
+-r requirements.txt
+pytest>=8

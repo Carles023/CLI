@@ -10,6 +10,23 @@ Una herramienta CLI simple para organizar automáticamente tus archivos en carpe
 - Mueve o copia archivos y carpetas concretos a otro directorio
 - Todos los comandos se definen fuera del código en `actions.json`
 
+## Estructura del proyecto
+
+```
+fsort.py                 # shim: 'python3 fsort.py ...' sin instalar nada
+pyproject.toml           # paquete instalable: consola 'fsort' + pytest config
+requirements*.txt        # runtime (vacío, solo stdlib) + dev (pytest)
+actions.json             # definición de comandos (sin tocar código)
+fsort/
+  __init__.py  __main__.py
+  fsort.py               # lógica y CLI
+  config.py              # validación de actions.json + prompts/env de IA
+  errores.py             # excepciones
+  gen_readme.py          # regenera las tablas del README
+  actions.json           # copia empaquetada (fallback del repo-root)
+tests/                   # pytest (lógica, CLI, imports, errores)
+```
+
 ## Comandos disponibles (actions.json)
 
 | Comando | Descripción | Uso |
@@ -36,8 +53,14 @@ Una herramienta CLI simple para organizar automáticamente tus archivos en carpe
 ## Uso
 
 ```bash
-# Ejecutar un comando
-python3 fsort.py <comando> [argumentos...]
+# Desde el repositorio (sin instalar)
+python3 fsort.py <comando> [argumentos...]        # shim de compatibilidad
+python3 -m fsort <comando> [argumentos...]        # modo modulo
+
+# Instalar el paquete (recomendado; crea el comando global 'fsort')
+python3 -m pip install .
+fsort ordenar ~/Descargas
+```
 
 # Ejemplos
 python3 fsort.py ordenar ~/Descargas
@@ -121,21 +144,35 @@ Todos los comandos viven en `actions.json`, sin lógica en el código:
 ```
 
 - `{1}`, `{2}`, ... se sustituyen por los argumentos que pases tras el nombre del comando.
-- `type: "command"` ejecuta un comando de shell; `type: "python"` llama a una función de `fsort.py` (indicada en `func`, con flags opcionales en `kwargs`).
-- Validar el archivo: `python3 config.py`
+- `type: "command"` ejecuta un comando de shell; `type: "python"` llama a una función del paquete `fsort` (indicada en `func`, con flags opcionales en `kwargs`).
+- Validar el archivo: `python3 -m fsort.config`
 
 ## Actualizar este README
 
 ```bash
-python3 gen_readme.py
+python3 fsort/gen_readme.py
+```
+
+## Tests
+
+```bash
+python3 -m pip install -r requirements-dev.txt
+python3 -m pytest
 ```
 
 ## Instalación (opcional)
 
-Para ejecutar como comando global:
+La via recomendada es instalar el paquete (crea el comando `fsort` en el PATH):
+
+```bash
+python3 -m pip install --user .
+# o en modo editable para desarrollo:
+python3 -m pip install --user -e .
+```
+
+Si prefieres un symlink sin instalar:
 
 ```bash
 chmod +x fsort.py
 sudo ln -s $(pwd)/fsort.py /usr/local/bin/fsort
-# Ahora puedes usar: fsort ordenar ~/Descargas
 ```
