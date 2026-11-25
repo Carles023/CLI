@@ -516,10 +516,11 @@ FUNC_GROUPS = (
     ("imagenes", (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".tif", ".webp",
                   ".heic", ".heif", ".svg", ".ico", ".cr2", ".nef", ".arw", ".raw",
                   ".psd", ".xcf")),
-    ("documentos", (".pdf", ".doc", ".docx", ".odt", ".rtf", ".pages", ".key", ".ppt",
+    ("documentos", (".doc", ".docx", ".odt", ".rtf", ".pages", ".key", ".ppt",
                     ".pptx", ".odp", ".xls", ".xlsx", ".ods", ".csv", ".tsv", ".txt",
                     ".md", ".markdown", ".rst", ".tex", ".org", ".epub", ".mobi",
                     ".azw3", ".djvu")),
+    ("pdfs", (".pdf",)),
     ("musica", (".mp3", ".wav", ".flac", ".aac", ".ogg", ".oga", ".opus", ".m4a",
                 ".wma", ".aiff", ".aif", ".mid", ".midi", ".mka")),
     ("video", (".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v",
@@ -612,7 +613,8 @@ def sort_files(directory: Path, dry_run: bool = False, copy: bool = False, recur
     Ordena archivos en un directorio por su extensión.
     Crea una carpeta por extensión y mueve/copia los archivos.
     Con folder_mode='human' agrupa en carpetas legibles (imagenes/,
-    documentos/, musica/, ...); con sufijos _1, _2 si hay colision de nombre.
+    documentos/, pdfs/, musica/, ...); con sufijos _1, _2 si hay colision
+    de nombre.
     """
     if not directory.exists():
         raise DirectoryNotFoundError(str(directory))

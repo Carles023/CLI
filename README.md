@@ -5,7 +5,7 @@ Una herramienta CLI simple para organizar automáticamente tus archivos en carpe
 ## Características
 
 - Organiza archivos por extensión en carpetas separadas (ej., `jpg/`, `pdf/`, `txt/`)
-- `ordenar-auto`: agrupa en carpetas con nombres humanos (`imagenes/`, `documentos/`, `musica/`...)
+- `ordenar-auto`: agrupa en carpetas con nombres humanos (`imagenes/`, `documentos/`, `pdfs/`, `musica/`...)
 - Soporta modo simulación (`--dry-run`) para previsualizar cambios
 - Vacía subcarpetas y mueve sus archivos a otro directorio
 - Mueve o copia archivos y carpetas concretos a otro directorio
@@ -40,7 +40,7 @@ tests/                   # pytest (lógica, CLI, imports, errores)
 | `ordenar` | Ordena archivos de un directorio en subcarpetas por extensión | `fsort.py ordenar <directorio>` |
 | `ordenar-copiar` | Igual que 'ordenar' pero copia los archivos en lugar de moverlos | `fsort.py ordenar-copiar <directorio>` |
 | `ordenar-recursivo` | Ordena archivos por extensión incluyendo subdirectorios | `fsort.py ordenar-recursivo <directorio>` |
-| `ordenar-auto` | Como 'ordenar' pero agrupa en carpetas con nombres humanos (imagenes/, documentos/, musica/, video/, archives/, programas/, codigo/, fuentes/, otros/) en lugar de una carpeta por extension | `fsort.py ordenar-auto <directorio>` |
+| `ordenar-auto` | Como 'ordenar' pero agrupa en carpetas con nombres humanos (imagenes/, documentos/, pdfs/, musica/, video/, archives/, programas/, codigo/, fuentes/, otros/) en lugar de una carpeta por extension. Los PDF van separados de los documentos de texto | `fsort.py ordenar-auto <directorio>` |
 | `vaciar` | Vacía las subcarpetas de un directorio moviendo sus archivos al destino indicado ({2}) y elimina las carpetas vacías | `fsort.py vaciar <directorio> <destino>` |
 | `vaciar-copiar` | Igual que 'vaciar' pero copia los archivos y conserva las subcarpetas | `fsort.py vaciar-copiar <directorio> <destino>` |
 | `mover` | Mueve archivos o carpetas ({1}...{n-1}) al directorio destino (último argumento) | `fsort.py mover <elemento>... <destino>` |

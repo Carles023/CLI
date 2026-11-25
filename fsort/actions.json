@@ -47,7 +47,7 @@
       "kwargs": {"recursive": true}
     },
     "ordenar-auto": {
-      "description": "Como 'ordenar' pero agrupa en carpetas con nombres humanos (imagenes/, documentos/, musica/, video/, archives/, programas/, codigo/, fuentes/, otros/) en lugar de una carpeta por extension",
+      "description": "Como 'ordenar' pero agrupa en carpetas con nombres humanos (imagenes/, documentos/, pdfs/, musica/, video/, archives/, programas/, codigo/, fuentes/, otros/) en lugar de una carpeta por extension. Los PDF van separados de los documentos de texto",
       "type": "python",
       "func": "sort_files",
       "kwargs": {"folder_mode": "human"}

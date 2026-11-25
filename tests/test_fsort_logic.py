@@ -450,7 +450,7 @@ def _human_dirs(d: Path):
 
 
 def test_sort_files_human_categorias(tmp_path):
-    for n in ("foto.jpg", "otra.PNG", "info.pdf", "cancion.mp3", "peli.mkv",
+    for n in ("foto.jpg", "otra.PNG", "nota.docx", "cancion.mp3", "peli.mkv",
               "paquete.zip", "app.exe", "script.py", "font.ttf", "cosa.xyz"):
         touch(tmp_path / n)
     touch(tmp_path / "sinext")
@@ -460,6 +460,16 @@ def test_sort_files_human_categorias(tmp_path):
                     "musica", "otros", "programas", "sin_extension", "video"]
     assert (tmp_path / "imagenes" / "otra.PNG").exists()
     assert (tmp_path / "otros" / "cosa.xyz").exists()
+
+
+def test_sort_files_human_pdfs_separados_de_documentos(tmp_path):
+    """En modo humano los .pdf van a pdfs/ y el resto de docs a documentos/."""
+    touch(tmp_path / "informe.pdf")
+    touch(tmp_path / "notas.txt")
+    fsort.sort_files(tmp_path, folder_mode="human")
+    assert (tmp_path / "pdfs" / "informe.pdf").exists()
+    assert (tmp_path / "documentos" / "notas.txt").exists()
+    assert not (tmp_path / "documentos" / "informe.pdf").exists()
 
 
 def test_sort_files_human_colisiones(tmp_path):
@@ -496,6 +506,7 @@ def test_folder_for_helpers():
     assert fsort._folder_for(".jpg") == "jpg"
     assert fsort._folder_for(".jpg", "human") == "imagenes"
     assert fsort._folder_for(".docx", "human") == "documentos"
+    assert fsort._folder_for(".pdf", "human") == "pdfs"
     assert fsort._folder_for(".xyz", "human") == "otros"
     assert fsort._folder_for("", "human") == "sin_extension"
 
