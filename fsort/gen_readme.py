@@ -113,17 +113,25 @@ def main() -> int:
     if MARK_START in readme and MARK_END in readme:
         start = readme.index(MARK_START)
         end = readme.index(MARK_END)
+        head = TABLE_HEADER.split("\n")[0]
+        if readme[:start].rstrip().endswith(head):
+            # El marcador esta justo debajo de la cabecera de tabla: reemplaza
+            # tambien la cabecera (va dentro del bloque generado) para no
+            # duplicarla en el README.
+            start = readme.rindex(head, 0, start)
+        post = readme[end + len(MARK_END):]
     elif TABLE_HEADER in readme:
         start = readme.index(TABLE_HEADER)
         end = readme.index("\n\n## Uso", start)
+        post = readme[end:]
     else:
         print(f"Error: el README debe contener {MARK_START}/{MARK_END} o la tabla generada.")
         return 1
 
-    suffix = readme[end:]
-    if suffix.startswith(MARK_END):
-        suffix = suffix[len(MARK_END):]
-    new_readme = readme[:start] + build_table(actions) + "\n\n" + suffix.lstrip("\n")
+    if post.startswith(MARK_END):
+        post = post[len(MARK_END):]
+    new_readme = (readme[:start] + MARK_START + "\n" + build_table(actions) + "\n"
+                  + MARK_END + "\n" + post.lstrip("\n"))
     new_readme = _ensure_ai_section(new_readme)
 
     with open(README_FILE, "w", encoding="utf-8") as f:

@@ -30,6 +30,7 @@ tests/                   # pytest (lógica, CLI, imports, errores)
 
 ## Comandos disponibles (actions.json)
 
+{{ACCIONES}}
 | Comando | Descripción | Uso |
 | --- | --- | --- |
 | `limpiar` | Mueve archivos temporales y de respaldo (.tmp, .temp, .bak, .old, ~, .swp, .log, basura de sistema) del directorio {1} a la papelera (FSORT_TRASH_DIR o ./trash). Recursivo. Pide confirmacion salvo --yes | `fsort.py limpiar <directorio>` |
@@ -66,7 +67,7 @@ tests/                   # pytest (lógica, CLI, imports, errores)
 | `diff` | Compara el directorio con su ultima instantanea (o con '[nombre]') y muestra creados, modificados, borrados y movidos/renombrados (detectados por hash). Con --latest compara las dos ultimas instantaneas guardadas. Solo lectura; usa --dry-run para ver solo el resumen. Acepta 'ext' como segundo argumento para filtrar (p. ej. *.txt) | `fsort.py diff <directorio> [nombre] [--latest]` |
 | `snapshot-list` | Lista las instantaneas guardadas (de todos los directorios o del indicado como argumento opcional) con fecha, numero de archivos y tamano | `fsort.py snapshot-list [directorio]` |
 | `ai` | Consulta la IA de Simarro. Pasa la pregunta como argumento (o usa --ai). Requiere FSORT_AI_KEY | `fsort.py ai "tu pregunta"` |
-
+{{FIN_ACCIONES}}
 ## Uso
 
 ```bash
@@ -79,6 +80,7 @@ python3 -m pip install .
 fsort ordenar ~/Descargas
 ```
 
+```bash
 # Ejemplos
 python3 fsort.py ordenar ~/Descargas
 python3 fsort.py info ~/Documentos
@@ -125,12 +127,12 @@ python3 fsort.py resumir paper.docx resumen.txt # destino a medida
 
 ### `resumir`
 
-Extrae el texto del archivo, envía-lo a la IA de Simarro y guarda el resultado en un `.txt`
+Extrae el texto del archivo, lo envia a la IA de Simarro y guarda el resultado en un `.txt`
 con cabecera (nombre, fecha, modelo, aviso de truncado si aplica).
 
 - **Formatos**: texto (`.txt .md .rst .log .csv .tsv .json .xml .html .tex .py .sh .yml`...),
   `.pdf` (usa `pdftotext`), `.docx .odt .rtf .org` (usa `pandoc`).
-- **Límite de entrada**: 12.000 caracteres por defecto (configurable amb
+- **Límite de entrada**: 12.000 caracteres por defecto (configurable con
   `FSORT_SUMMARY_MAX_CHARS`). Si el archivo es más largo, se trunca y se avisa al resumen.
 - **Salida**: junto al original (`<stem>_resumen.txt`) o en la ruta indicada
   (siempre `.txt`). Si ya existe, se crea `<stem>_resumen_1.txt`, etc. — nunca sobrescribe.
