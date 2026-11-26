@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fsort"
 version = "1.0.0"
-description = "CLI para organizar archivos en carpetas según su extensión"
+description = "CLI para organizar, deduplicar, limpiar, sincronizar y resumir archivos, configurable via actions.json"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "cartudgar" }]
-keywords = ["cli", "archivos", "organizar", "extensions"]
+keywords = ["cli", "archivos", "organizar", "extensions", "duplicados", "limpieza", "snapshots"]
 dependencies = []
 
 [project.optional-dependencies]

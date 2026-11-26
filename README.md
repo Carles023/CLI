@@ -1,6 +1,6 @@
 # fsort
 
-Una herramienta CLI simple para organizar automáticamente tus archivos en carpetas según su extensión.
+Una CLI en Python para mantener tus archivos en orden: organiza por extensión o por categorías, detecta y deduplica archivos (también con hardlinks), limpia temporales a una papelera recuperable, sincroniza y extrae archivos, lista los más grandes o antiguos, guarda instantáneas para comparar cambios, resume documentos con IA y mucho más — todo configurable sin tocar código mediante `actions.json`.
 
 ## Características
 
