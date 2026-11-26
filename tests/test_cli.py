@@ -30,6 +30,13 @@ def test_script_comando_inexistente():
     assert "no existe" in r.stdout
 
 
+def test_script_version():
+    import fsort as _pkg
+    r = _run(["--version"])
+    assert r.returncode == 0
+    assert _pkg.__version__ in r.stdout
+
+
 def test_script_ordenar_dry_run(tmp_path):
     (tmp_path / "a.txt").write_text("x")
     r = _run(["ordenar", str(tmp_path), "--dry-run"])

@@ -15,4 +15,8 @@ except ImportError:
     from fsort.fsort import main
 
 if __name__ == "__main__":
+    # `python -m fsort` mostraria '__main__.py' en --version/-h: fuerza el
+    # nombre de programa correcto (el consola 'fsort' ya lo trae del PATH).
+    if Path(sys.argv[0]).name == "__main__.py":
+        sys.argv[0] = "fsort"
     main()

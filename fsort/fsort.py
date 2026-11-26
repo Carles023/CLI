@@ -2842,6 +2842,9 @@ Ejemplos:
                         help="Usar un actions.json alternativo (por defecto, actions.json junto al script)")
     parser.add_argument("-d", "--dry-run", action="store_true",
                         help="Simular la operación sin mover/copiar archivos")
+    parser.add_argument("--version", "-V", action="version",
+                        version=f"%(prog)s {__import__('fsort').__version__}",
+                        help="Mostrar la version de fsort y salir")
     parser.add_argument("--actions", action="store_true",
                         help="Listar los comandos personalizados de actions.json")
     parser.add_argument("--yes", "-y", action="store_true",
